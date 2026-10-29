@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16
+    container_name: apscrap-db
+    environment:
+      POSTGRES_USER: ${PGUSER:-apscrap}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-apscrap}
+      POSTGRES_DB: ${PGDATABASE:-apscrap}
+    ports:
+      - "${PGPORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-apscrap}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: apscrap-metabase
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${MB_PORT:-3002}:3000"
+    volumes:
+      - mbdata:/metabase-data
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+
+volumes:
+  pgdata:
+  mbdata:
