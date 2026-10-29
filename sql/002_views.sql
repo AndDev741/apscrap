@@ -105,9 +105,12 @@ LEFT JOIN v_area_centroid cp ON cp.council = l.council AND cp.parish = l.parish 
 LEFT JOIN v_area_centroid cc ON cc.council = l.council AND cc.council_level = 1
 LEFT JOIN v_listing_history h ON h.listing_id = l.id
 LEFT JOIN commute_meta m ON true
+-- Commute from exact coordinates or the parish centre, never the council
+-- centre: Lisboa alone spans 15 to 60 minutes, so one figure for all of it
+-- would be noise dressed as data.
 LEFT JOIN commute_cells cm
-       ON cm.lat_idx = round(COALESCE(l.latitude,  cp.lat, cc.lat) / m.step_lat)::int
-      AND cm.lon_idx = round(COALESCE(l.longitude, cp.lon, cc.lon) / m.step_lon)::int;
+       ON cm.lat_idx = round(COALESCE(l.latitude,  cp.lat) / m.step_lat)::int
+      AND cm.lon_idx = round(COALESCE(l.longitude, cp.lon) / m.step_lon)::int;
 
 -- How a rental compares with its neighbours. The peer group is the narrowest
 -- one with at least 8 listings: same parish, type and typology; else same

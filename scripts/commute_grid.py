@@ -30,6 +30,11 @@ when timetables do, so re-run it a few times a year and when you change jobs.
         --out ~/apscrap.commute.csv
     apscrap commute-load ~/apscrap.commute.csv        # or DEPLOY.md for the server
 
+Check that every operator runs on the --departure date. The Carris
+Metropolitana feed published 2026-10-28 has no calendar for area 2 (Loures,
+Odivelas, Vila Franca, Mafra) from 1 November, so a November date silently
+drops every bus there; 2026-10-29 was used for the first grid.
+
 TML's all-operators feed (go.tmlmobilidade.pt/hub/api/v1/plans/gtfs) looks
 simpler but carries the same broken Carris Metropolitana trips, and mixing it
 with the per-operator feeds counts every trip twice. If a run fails on a feed
@@ -81,21 +86,26 @@ def main() -> None:
         geometry=[r[3] for r in rows], crs="EPSG:4326",
     )
     destination = gpd.GeoDataFrame({"id": ["work"]}, geometry=[Point(args.lon, args.lat)], crs="EPSG:4326")
-    print(f"{len(origins)} grid points, {STEP_M} m apart")
+    print(f"{len(origins)} grid points, {STEP_M} m apart", flush=True)
 
     network = r5py.TransportNetwork(args.osm, args.gtfs)
     departure = dt.datetime.fromisoformat(args.departure)
+    # Routed from work out to every cell, not from every cell to work: r5py
+    # runs one search per origin, so the other way round is 25,000 searches
+    # (hours) instead of one (minutes). Transit times averaged over an hour of
+    # departures are close to symmetric, which is good enough for a figure the
+    # site already labels as an estimate.
     ttm = r5py.TravelTimeMatrix(
         network,
-        origins=origins,
-        destinations=destination,
+        origins=destination,
+        destinations=origins,
         departure=departure,
         departure_time_window=dt.timedelta(minutes=args.window_min),
         transport_modes=[r5py.TransportMode.TRANSIT, r5py.TransportMode.WALK],
         max_time=dt.timedelta(minutes=120),
     )
 
-    reached = ttm.dropna(subset=["travel_time"]).merge(origins[["id", "lat_idx", "lon_idx"]], left_on="from_id", right_on="id")
+    reached = ttm.dropna(subset=["travel_time"]).merge(origins[["id", "lat_idx", "lon_idx"]], left_on="to_id", right_on="id")
     with open(args.out, "w") as f:
         f.write(f"# label={args.label},step_lat={step_lat:.8f},step_lon={step_lon:.8f},"
                 f"departure={departure.isoformat()}\n")
