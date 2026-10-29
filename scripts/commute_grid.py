@@ -5,19 +5,35 @@ Run on a laptop, not on the server: Conveyal R5 (through r5py) needs several
 GB of memory to route over the metropolitan network. The result changes only
 when timetables do, so re-run it a few times a year and when you change jobs.
 
-    python3 -m venv /tmp/r5 && /tmp/r5/bin/pip install "r5py>=1.0"
+    python3 -m venv /tmp/r5 && /tmp/r5/bin/pip install "r5py>=1.0" osmium
+
+    # 1. street network: Geofabrik Portugal, cut down to Greater Lisbon
+    curl -LO https://download.geofabrik.de/europe/portugal-latest.osm.pbf
+    /tmp/r5/bin/python scripts/commute_clip_osm.py portugal-latest.osm.pbf lisboa.osm.pbf
+
+    # 2. timetables, one file per operator, each with its own name: r5py caches
+    #    converted feeds by file name, so seven files called gtfs.zip collide
+    curl -L -o metro_lisboa.zip https://www.metrolisboa.pt/google_transit/googleTransit.zip
+    curl -L -o carris.zip https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS
+    curl -L -o cm_raw.zip https://api.carrismetropolitana.pt/gtfs
+    curl -L -o cp.zip https://publico.cp.pt/gtfs/gtfs.zip
+    curl -L -o fertagus.zip https://www.fertagus.pt/GTFSTMLzip/Fertagus_GTFS.zip
+    curl -L -o transtejo.zip https://api.ttsl.pt/files/GTFS.zip
+    curl -L -o mts.zip https://files.mobilitydatabase.org/mdb-2408/latest.zip
+    /tmp/r5/bin/python scripts/commute_clean_gtfs.py cm_raw.zip carris_metropolitana.zip
+
+    # 3. the grid (a few minutes), then load it
     /tmp/r5/bin/python scripts/commute_grid.py \
         --lat <work lat> --lon <work lon> --label <name shown on the site> \
-        --osm portugal-latest.osm.pbf --gtfs tml-all-operators.zip \
-        --out ~/apscrap-commute.csv
-    apscrap commute-load ~/apscrap-commute.csv
+        --osm lisboa.osm.pbf --gtfs metro_lisboa.zip carris.zip carris_metropolitana.zip \
+            cp.zip fertagus.zip transtejo.zip mts.zip \
+        --out ~/apscrap.commute.csv
+    apscrap commute-load ~/apscrap.commute.csv        # or DEPLOY.md for the server
 
-Data, all public and keyless:
-  OSM     https://download.geofabrik.de/europe/portugal-latest.osm.pbf
-  GTFS    https://go.tmlmobilidade.pt/hub/api/v1/plans/gtfs  (TML: Metro, Carris,
-          Carris Metropolitana, CP, Fertagus, Transtejo, MTS, MobiCascais,
-          TCB in one feed; do not add the per-operator feeds on top, or every
-          trip is counted twice)
+TML's all-operators feed (go.tmlmobilidade.pt/hub/api/v1/plans/gtfs) looks
+simpler but carries the same broken Carris Metropolitana trips, and mixing it
+with the per-operator feeds counts every trip twice. If a run fails on a feed
+error that is already fixed, clear ~/.cache/r5py.
 
 The output encodes where you work. Keep it out of git; .gitignore covers
 *.commute.csv and the default name.
