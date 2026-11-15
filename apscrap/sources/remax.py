@@ -7,8 +7,9 @@ it, or not read for a week. The detail page carries the whole advert as
 base64 JSON in __NEXT_DATA__ (props.pageProps.listingEncoded): exact
 coordinates, publish date, previous price.
 
-An advert that leaves the sitemap is gone; its page answers 404. RE/MAX does
-not keep let flats online, so there is no "rented" flag.
+An advert that leaves the sitemap is gone; its page answers 404. Many let
+flats stay in the sitemap for a while with isSold (listingStatusID 6), and
+reserved ones carry status 2, so RE/MAX does say "let" and "reserved".
 """
 from __future__ import annotations
 
@@ -183,7 +184,11 @@ class Remax(Source):
         title_bits = [ptype == "house" and "Moradia" or "Apartamento",
                       typology(slug, bedrooms=ad.get("numberOfBedrooms")),
                       ad.get("regionName3") or ad.get("regionName2")]
-        rented = bool(ad.get("isSold")) or ad.get("listingStatusID") not in (1, None)
+        # listingStatusID: 1 available, 2 reserved, 6 let or sold (with isSold).
+        # Anything else is left as it was.
+        status_id = ad.get("listingStatusID")
+        rented = bool(ad.get("isSold")) or status_id == 6
+        status = "rented" if rented else {1: "available", 2: "reserved"}.get(status_id)
         listing = {
             "source": self.name, "external_id": ext_id,
             "url": f"{BASE}/pt/imoveis/{slug}/{ext_id}" if slug else f"{BASE}/pt/{ext_id}",
@@ -202,7 +207,7 @@ class Remax(Source):
             "description": ad.get("description"),
             "extras": extras or None, "image_urls": photos or None,
             "source_updated_at": ts(ad.get("modified")),
-            "status": "rented" if rented else "available",
+            "status": status,
             "_detail": True,
         }
         snapshot = None
