@@ -75,7 +75,10 @@ def parse_cards(page: str) -> list[dict]:
             "features": _div(block, "property-features-text"),
             "price": _div(block, "property-price-value"),
             "price_type": _div(block, "property-price-type"),
-            "description": text(re.search(r'<div class="property-description">(.*?)</div>', block, re.S).group(1))
+            # The card holds the whole description; 1,500 characters keep what
+            # the extras and the reading need without 7 MB of raw pages a night.
+            "description": text(re.search(r'<div class="property-description">(.*?)</div>', block, re.S).group(1),
+                                limit=1500)
                            if 'class="property-description"' in block else None,
             "seller_type": seller.get("@type"),
             "seller_name": seller.get("name") or (html.unescape(agency.group(1)) if agency else None),

@@ -448,3 +448,7 @@ LANGUAGE sql IMMUTABLE AS $f$
     SELECT prev > 0 AND price IS NOT NULL
        AND abs(price - prev) / prev >= CASE transaction_type WHEN 'sale' THEN 0.005 ELSE 0.01 END
 $f$;
+
+-- For pruning superseded copies of advert pages that RE/MAX and KW re-read
+-- (db.prune_raw_search), and for finding an advert's latest page.
+CREATE INDEX IF NOT EXISTS raw_pages_url_idx ON raw_pages (source, url) WHERE kind = 'listing';

@@ -50,7 +50,11 @@ def save_raw_page(conn, run_id, source, kind, url, status, payload) -> int:
 def prune_raw_search(keep_days: int) -> dict:
     """Delete raw search pages that parsed cleanly and are past retention.
     Pages that failed to parse are kept, because those are the ones a parser
-    fix needs to replay."""
+    fix needs to replay.
+
+    Advert pages that RE/MAX and KW re-read every week ('listing') go the same
+    way, except the newest copy of each advert, which a replay needs. Imovirtual
+    detail pages are read once and kept."""
     with connect() as conn:
         n = conn.execute(
             """DELETE FROM raw_pages
@@ -59,5 +63,15 @@ def prune_raw_search(keep_days: int) -> dict:
                   AND fetched_at < now() - make_interval(days => %s)""",
             (keep_days,),
         ).rowcount
+        m = conn.execute(
+            """DELETE FROM raw_pages r
+                WHERE r.kind = 'listing'
+                  AND r.parsed_at IS NOT NULL AND r.parse_error IS NULL
+                  AND r.fetched_at < now() - make_interval(days => %s)
+                  AND EXISTS (SELECT 1 FROM raw_pages n
+                               WHERE n.source = r.source AND n.kind = 'listing'
+                                 AND n.url = r.url AND n.id > r.id)""",
+            (keep_days,),
+        ).rowcount
         conn.commit()
-    return {"deleted": n, "keep_days": keep_days}
+    return {"deleted": n, "deleted_listing_copies": m, "keep_days": keep_days}
