@@ -10,8 +10,10 @@ when they agree on transaction, type, typology and council, and on
   gross area,
 - place: within 400 m when both have coordinates, else the same parish.
 
-When the advertisers differ (an ERA office on one portal, a Century 21 one on
-the other) the bar is higher: price within 1%, area within 3% (or 2 m²) and
+An exact twin (same advertiser, price and area to the square metre, same
+council) matches whatever the distance, because some adverts on Imovirtual and
+ERA sit at a rough point kilometres from the flat. When the advertisers differ
+(an ERA office on one portal, a Century 21 one on the other) the bar is higher: price within 1%, area within 3% (or 2 m²) and
 within 200 m. Two agencies with the same flat happens, but so do two similar
 flats in the same street.
 
@@ -101,13 +103,19 @@ def match(a: dict, b: dict) -> float | None:
     ad = abs(a["area"] - b["area"])
     if ad > area_abs and ad / max(a["area"], b["area"]) > area_tol:
         return None
+    # Same advertiser, same price, same area to the square metre, same
+    # council: the same flat even when one portal's pin is kilometres off
+    # (Imovirtual and ERA both have adverts placed at a rough point).
+    twin = same and pd <= 0.005 and ad <= 1.0
     if None not in (a["latitude"], b["latitude"]):
         dist = _metres(a, b)
-        if dist > metres:
+        if dist > metres and not twin:
             return None
-        place = dist / MAX_DISTANCE_M
+        place = min(dist / MAX_DISTANCE_M, 1.0)
     elif same and a["parish"] and a["parish"] == b["parish"]:
         place = 0.5
+    elif twin:
+        place = 1.0
     else:
         return None
     return pd / PRICE_TOL + (ad / max(a["area"], b["area"])) / AREA_TOL + place + (0 if same else 1)

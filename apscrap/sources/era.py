@@ -131,8 +131,13 @@ class Era(Source):
         status_name = ((it.get("BusinessStatus") or {}).get("Name") or "").strip().lower()
         status = STATUS.get(status_name, "available")
         price = money((it.get("RentPrice") or {}).get("Value"))
-        area = number(it.get("NetArea")) or number(it.get("ListingArea"))
+        # ListingArea is the figure ERA offices send to Imovirtual, so copies
+        # of one flat compare like with like.
+        area = number(it.get("ListingArea")) or number(it.get("NetArea"))
         lat, lon = _coord(it.get("Lat")), _coord(it.get("Lng"))
+        # Without HasExactLocation the point is only near the flat: good
+        # enough to name the parish, not to be stored as its position.
+        exact = bool(it.get("HasExactLocation"))
         # "Apartamento T2 / Loures, Camarate, Unhos e Apelação": council, then
         # parish or neighbourhood.
         where = (it.get("Title") or "").split(" / ", 1)[-1]
@@ -156,7 +161,7 @@ class Era(Source):
             "agency_name": ((it.get("RealEstate") or {}).get("Name") or "ERA").strip(),
             "listed_at": None,
             "thumbnail_url": (it.get("_photos") or [None])[0],
-            "latitude": lat, "longitude": lon,
+            "latitude": lat if exact else None, "longitude": lon if exact else None,
             "energy_cert": (it.get("Ce") or "").strip() or None,
             "image_urls": it.get("_photos") or None,
             "extras": extras or None,
