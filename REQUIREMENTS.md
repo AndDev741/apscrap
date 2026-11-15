@@ -455,6 +455,6 @@ done in production, and what still waits on someone:
 | DU-4 | Done in code: shortlist drops, saved searches, zone alerts. Telegram delivery needs `TELEGRAM_BOT_TOKEN` in production, which has never been set; until then everything shows in the app's diary feed |
 | DU-5 | Done. Written on Mondays by the nightly job, with prose from the assistant around the SQL facts |
 | AG-1 to AG-4 | Done. OmniRoute (the beyou combo), read-only tools, role `apscrap_readonly`, monthly cap in euros |
-| AG-5 | Done: `scripts/agent_eval.py`, about 20 questions checked against SQL |
+| AG-5 | Done: `scripts/agent_eval.py`, 21 questions checked against SQL. First run 16/21; after the fixes it records, 21/21 (about 0.92 € of tokens per run) |
 | CA-1 to CA-4 | Done on the Carros screen, for the models the two of you follow |
 | IM-5, IM-7 (step 8) | Not started, as decided in Q1 |
