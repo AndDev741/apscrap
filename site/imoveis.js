@@ -35,33 +35,106 @@
     return { th: [q(0.2), q(0.4), q(0.6), q(0.8)], min: vals[0], max: vals[vals.length - 1] };
   }
 
+  /* The zone map, in two views over the same numbers: a mosaic of tiles
+     (every parish the same size, easy to read on a phone) and the real map
+     with each parish's official outline (CAOP). The choice is remembered. */
+  let zoneView = (() => { try { return localStorage.getItem("cc.zoneview") || "mosaico"; } catch (e) { return "mosaico"; } })();
+  let geoCache = null;
+
   function zoneMap(data, mode, onPick) {
-    const z = data.zones.filter((x) => x.col);
+    const z = data.zones;
     const b = buckets(z);
     const label = (v) => (v === null || v === undefined ? "–" : mode === "sale" ? nf(v / 1000, 1) + "k" : nf(v, 1));
     const bucket = (v) => { let i = 0; while (i < 4 && v > b.th[i]) i++; return i; };
-    const grid = h("div", { class: "carto" });
-    for (const t of z) {
-      const thin = t.median_ppm === null;
-      const i = thin ? 0 : bucket(t.median_ppm);
-      const ch = t.change_12m;
-      grid.appendChild(h("button", {
-        type: "button", class: "tile" + (thin ? " thin" : ""), "aria-pressed": selected === t.parish ? "true" : "false",
-        title: t.parish + (thin ? " (n=" + t.n + ", poucos anúncios)" : ""),
-        "aria-label": t.parish + ", " + (thin ? "só " + t.n + " anúncios" : App.ppm(t.median_ppm, mode)) + (ch !== null ? ", " + (ch >= 0 ? "subida" : "descida") + " de " + nf(Math.abs(ch), 1) + "% em 12 meses" : ""),
-        style: { gridColumn: t.col, gridRow: t.row, background: thin ? null : RAMP[i], color: !thin && i >= 3 ? "#FFFFFF" : "#1E1B16" },
-        onclick: () => onPick(t.parish),
-      }, h("span", { class: "nm" }, t.short), h("span", { class: "vl" }, h("b", null, thin ? "n=" + t.n : label(t.median_ppm)), h("span", null, ch === null ? "" : ch >= 0 ? "▲" : "▼"))));
+    const colour = (t) => (t.median_ppm === null ? null : RAMP[bucket(t.median_ppm)]);
+    const aria = (t) => t.parish + ", " + (t.median_ppm === null ? "só " + t.n + " anúncios" : App.ppm(t.median_ppm, mode)) +
+      (t.change_12m !== null ? ", " + (t.change_12m >= 0 ? "subida" : "descida") + " de " + nf(Math.abs(t.change_12m), 1) + "% em 12 meses" : "");
+    const body = h("div", { style: { display: "flex", flexDirection: "column", gap: "12px" } });
+    const note = h("p", { class: "xsmall muted", style: { margin: 0 } });
+    let markSelected = () => {};
+
+    function mosaic() {
+      const grid = h("div", { class: "carto" });
+      const tiles = {};
+      for (const t of z.filter((x) => x.col)) {
+        const thin = t.median_ppm === null;
+        const i = thin ? 0 : bucket(t.median_ppm);
+        const ch = t.change_12m;
+        tiles[t.parish] = grid.appendChild(h("button", {
+          type: "button", class: "tile" + (thin ? " thin" : ""), "aria-pressed": selected === t.parish ? "true" : "false",
+          title: t.parish + (thin ? " (n=" + t.n + ", poucos anúncios)" : ""), "aria-label": aria(t),
+          style: { gridColumn: t.col, gridRow: t.row, background: thin ? null : RAMP[i], color: !thin && i >= 3 ? "#FFFFFF" : "#1E1B16" },
+          onclick: () => onPick(t.parish),
+        }, h("span", { class: "nm" }, t.short), h("span", { class: "vl" }, h("b", null, thin ? "n=" + t.n : label(t.median_ppm)), h("span", null, ch === null ? "" : ch >= 0 ? "▲" : "▼"))));
+      }
+      markSelected = () => { for (const [p, el] of Object.entries(tiles)) el.setAttribute("aria-pressed", p === selected ? "true" : "false"); };
+      note.textContent = "Cada mosaico é uma freguesia em posição aproximada, norte em cima. Seta = tendência a 12 meses (INE enquanto o nosso histórico for curto). Mosaicos às riscas têm menos de " + data.min_n + " anúncios.";
+      return grid;
     }
+
+    function geo() {
+      const el = h("div", { class: "map zone-geo", role: "region", "aria-label": "Mapa das freguesias" });
+      note.textContent = "Contornos oficiais das freguesias (CAOP). Cor = mediana do €/m²; freguesias a cinzento claro têm menos de " + data.min_n + " anúncios. Toca numa freguesia para ver o detalhe.";
+      setTimeout(async () => {
+        const map = App.makeMap(el, [38.78, -9.16], 11);
+        if (!map) return;
+        map.scrollWheelZoom.enable();
+        if (!geoCache) geoCache = await fetch("geo/freguesias.geojson").then((r) => r.json());
+        const byName = {};
+        for (const t of z) byName[t.council + "|" + t.parish] = t;
+        const layers = {};
+        const style = (t) => {
+          const c = colour(t);
+          const sel = t.parish === selected;
+          return { color: sel ? "#1E1B16" : "#FFFDF8", weight: sel ? 3 : 1, fillColor: c || "#ECE5D8", fillOpacity: c ? 0.82 : 0.55, dashArray: c ? null : "3 3" };
+        };
+        const geoLayer = L.geoJSON(geoCache, {
+          filter: (f) => byName[f.properties.council + "|" + f.properties.parish],
+          style: (f) => style(byName[f.properties.council + "|" + f.properties.parish]),
+          onEachFeature: (f, layer) => {
+            const t = byName[f.properties.council + "|" + f.properties.parish];
+            layers[t.parish] = { layer, t };
+            layer.bindTooltip(t.parish + " · " + (t.median_ppm === null ? "n=" + t.n : App.ppm(t.median_ppm, mode)) + (t.change_12m !== null ? " · " + (t.change_12m >= 0 ? "▲" : "▼") + nf(Math.abs(t.change_12m), 1) + "%" : ""), { sticky: true });
+            layer.on("click", () => onPick(t.parish));
+            layer.on("mouseover", () => layer.setStyle({ weight: 3 }));
+            layer.on("mouseout", () => layer.setStyle(style(t)));
+            if (t.median_ppm !== null) {
+              const c = colour(t);
+              L.marker(layer.getBounds().getCenter(), { interactive: false, keyboard: false,
+                icon: L.divIcon({ className: "geo-label" + (RAMP.indexOf(c) >= 3 ? " dark" : ""), html: "", iconSize: null }) })
+                .addTo(map).getElement().textContent = label(t.median_ppm);
+            }
+          },
+        }).addTo(map);
+        if (geoLayer.getLayers().length) map.fitBounds(geoLayer.getBounds(), { padding: [10, 10] });
+        markSelected = () => { for (const { layer, t } of Object.values(layers)) { layer.setStyle(style(t)); if (t.parish === selected) layer.bringToFront(); } };
+        markSelected();
+      }, 0);
+      return el;
+    }
+
+    const draw = () => { clear(body); body.appendChild(zoneView === "mapa" ? geo() : mosaic()); };
+    const viewToggle = h("div", { class: "seg", role: "group", "aria-label": "Vista do mapa" },
+      [["mosaico", "Mosaico"], ["mapa", "Mapa"]].map(([v, l]) => h("button", { type: "button", "aria-pressed": zoneView === v ? "true" : "false",
+        onclick: (e) => {
+          zoneView = v;
+          try { localStorage.setItem("cc.zoneview", v); } catch (err) { /* private window */ }
+          viewToggle.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", "false"));
+          e.currentTarget.setAttribute("aria-pressed", "true");
+          draw();
+        } }, l)));
     const typChips = h("div", { class: "chips", role: "group", "aria-label": "Tipologia" },
       [["", "Todas"], ["T1", "T1"], ["T2", "T2"], ["T3", "T3"], ["T4+", "T4+"]].map(([v, l]) =>
         h("button", { type: "button", class: "chip sq", "aria-pressed": typology === v ? "true" : "false", onclick: () => { typology = v; App.render(); } }, l)));
-    return h("div", { class: "card main" },
+    draw();
+    const card = h("div", { class: "card main" },
       h("div", { class: "card-head" },
         h("div", null, h("h2", null, "Mapa por zona"), h("p", { class: "sub" }, (mode === "sale" ? "Venda · milhares de €/m²" : "Arrendamento · €/m² por mês") + " · toca numa zona para ver o detalhe")),
         h("div", { class: "legend", "aria-label": "Legenda" }, h("span", null, label(b.min)), h("div", { class: "ramp" }, RAMP.map((c) => h("i", { style: { background: c } }))), h("span", null, label(b.max)))),
-      typChips, grid,
-      h("p", { class: "xsmall muted", style: { margin: 0 } }, "Cada mosaico é uma freguesia em posição aproximada, norte em cima. Seta = tendência a 12 meses (INE enquanto o nosso histórico for curto). Mosaicos às riscas têm menos de " + data.min_n + " anúncios."));
+      h("div", { class: "map-controls" }, typChips, viewToggle),
+      body, note);
+    card.markSelected = () => markSelected();
+    return card;
   }
 
   function zonePanel(t, mode) {
@@ -134,12 +207,18 @@
         selected = best ? best.parish : null;
       }
       const root = h("frag");
+      // The map card stays put when a zone is picked: only the panel and the
+      // highlight change, so the geographic map keeps its zoom.
       const mapWrap = h("section", { class: "split" });
-      const draw = () => {
-        clear(mapWrap);
-        add(mapWrap, [zoneMap(zones, mode, (p) => { selected = p; draw(); }), zonePanel(zones.zones.find((z) => z.parish === selected), mode)]);
-      };
-      draw();
+      let panel = zonePanel(zones.zones.find((z) => z.parish === selected), mode);
+      const card = zoneMap(zones, mode, (p) => {
+        selected = p;
+        const next = zonePanel(zones.zones.find((z) => z.parish === selected), mode);
+        mapWrap.replaceChild(next, panel);
+        panel = next;
+        card.markSelected();
+      });
+      add(mapWrap, card, panel);
       add(root, [kpis(o, mode), mapWrap, h("section", { class: "split" }, deals(dl.items, mode), diary(o, diaryRows))]);
       return root;
     },
