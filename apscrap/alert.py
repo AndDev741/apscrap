@@ -34,15 +34,21 @@ def _list(name: str, default: str) -> list[str]:
 
 
 def _criteria() -> tuple[str, dict]:
-    commute = os.getenv("ALERT_MAX_COMMUTE")
+    # Settings (ST-1) win; the ALERT_* variables are their defaults.
+    from . import appsettings
+    pc = appsettings.get("property_criteria")
+    typs = [t for t in pc.get("typologies") or [] if t != "T4+"]
+    if "T4+" in (pc.get("typologies") or []):
+        typs += ["T4", "T5", "T6"]
     params = {
-        "max_price": float(os.getenv("ALERT_MAX_PRICE", "1300")),
-        "typologies": _list("ALERT_TYPOLOGIES", "T1,T2,T3,T4,T5,T6"),
-        "councils": _list("ALERT_COUNCILS", "Lisboa,Odivelas,Loures"),
-        "max_commute": int(commute) if commute else None,
+        "max_price": float(pc.get("max_price") or 1e9),
+        "typologies": typs or ["T1", "T2", "T3", "T4", "T5", "T6"],
+        "councils": pc.get("councils") or ["Lisboa", "Odivelas", "Loures"],
+        "max_commute": int(pc["max_commute"]) if pc.get("max_commute") else None,
     }
     where = """
-        price_eur <= %(max_price)s
+        transaction_type = 'rent'
+        AND price_eur <= %(max_price)s
         AND typology = ANY(%(typologies)s)
         AND council = ANY(%(councils)s)
         AND NOT is_temporary

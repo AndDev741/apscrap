@@ -1,674 +1,408 @@
-/* apScrap front end. Reads data.json (written nightly by `apscrap export`) and
- * does all filtering in the browser. Every string that came from a listing is
- * inserted with textContent, never innerHTML: titles are typed by advertisers. */
-"use strict";
+/* Casa & Carro: core. Router, API calls, header and the pieces every page
+   shares. No build step: plain scripts in order, everything under App.
 
-const FOCUS_COUNCILS = ["Lisboa", "Odivelas", "Loures"];
-const TYPOLOGIES = ["T0", "T1", "T2", "T3", "T4+"];
-const TYPES = [["flat", "Apartamento"], ["house", "Moradia"]];
-const PAGE = 30;
-const STORE_KEY = "apscrap.filters.v1";
+   Listing titles and descriptions are written by strangers, so nothing from
+   the API goes through innerHTML: h() builds DOM nodes and sets text. */
+(function () {
+  "use strict";
 
-const DEFAULTS = {
-  councils: [...FOCUS_COUNCILS],
-  typologies: ["T1", "T2", "T3", "T4+"],
-  types: ["flat", "house"],
-  maxPrice: 1300,
-  maxCommute: "",
-  temp: false,
-};
+  const App = (window.App = { pages: {}, state: {} });
 
-const state = {
-  data: null,
-  filters: loadFilters(),
-  tab: "deals",
-  shown: { deals: PAGE, negotiate: PAGE, new: PAGE },
-  map: null,
-  mapLayer: null,
-  tiles: null,
-  parishSort: { key: "parish", dir: 1 },
-};
-
-// -- small helpers ---------------------------------------------------------
-
-const $ = (sel) => document.querySelector(sel);
-
-function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v == null || v === false) continue;
-    if (k === "class") node.className = v;
-    else if (k === "text") node.textContent = v;
-    else if (k === "style") node.style.cssText = v;
-    else node.setAttribute(k, v === true ? "" : v);
-  }
-  for (const c of children) if (c != null) node.append(c);
-  return node;
-}
-
-const icon = (name) => el("i", { class: `ph ph-${name}`, "aria-hidden": "true" });
-
-function eur(n) {
-  if (n == null) return "";
-  return "€" + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-}
-
-function num(n, digits = 0) {
-  return Number(n).toLocaleString("pt-PT", { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
-
-// export.py strips these shared prefixes to keep data.json small
-function listingUrl(l) {
-  return l.url.startsWith("http") ? l.url : `https://www.imovirtual.com/pt/anuncio/${l.url}`;
-}
-function thumbUrl(l) {
-  if (!l.thumbnail_url) return null;
-  return l.thumbnail_url.startsWith("http") ? l.thumbnail_url
-    : `https://ireland.apollo.olxcdn.com/v1/files/${l.thumbnail_url}/image;s=655x491;q=80`;
-}
-
-function typologyBucket(t) {
-  if (!t) return null;
-  const n = parseInt(t.slice(1), 10);
-  return n >= 4 ? "T4+" : t;
-}
-
-function daysBetween(a, b) {
-  return Math.round((new Date(b) - new Date(a)) / 86400000);
-}
-
-function loadFilters() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return { ...DEFAULTS, ...JSON.parse(raw) };
-  } catch (_) { /* private mode or blocked storage: defaults are fine */ }
-  return structuredClone(DEFAULTS);
-}
-
-function saveFilters() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state.filters)); } catch (_) { /* ignore */ }
-}
-
-// -- filtering -------------------------------------------------------------
-
-function matches(l) {
-  const f = state.filters;
-  if (!f.councils.includes(l.council)) return false;
-  if (!f.typologies.includes(typologyBucket(l.typology))) return false;
-  if (!f.types.includes(l.property_type)) return false;
-  if (f.maxPrice && l.price_eur > f.maxPrice) return false;
-  if (!f.temp && l.is_temporary) return false;
-  if (f.maxCommute && (l.commute_min == null || l.commute_min > Number(f.maxCommute))) return false;
-  return true;
-}
-
-function listedDate(l) {
-  return l.listed || l.first_seen;
-}
-
-function leverage(l) {
-  const dropPct = l.max_price ? (1 - l.price_eur / l.max_price) * 100 : 0;
-  return (l.days_on_market || 0) / 30 + (l.n_drops || 0) * 2 + dropPct / 4;
-}
-
-function views(list) {
-  const today = state.data.generated_at.slice(0, 10);
-  const byScore = (a, b) => (b.deal_score ?? -999) - (a.deal_score ?? -999);
-  return {
-    deals: [...list].sort(byScore),
-    negotiate: list
-      .filter((l) => (l.days_on_market || 0) >= 60 || (l.n_drops || 0) > 0)
-      .sort((a, b) => leverage(b) - leverage(a)),
-    new: list.filter((l) => daysBetween(listedDate(l), today) <= 3).sort(byScore),
-  };
-}
-
-// -- rendering: summary ----------------------------------------------------
-
-function renderSummary(list, v) {
-  $("#hero-figure").textContent = num(list.length);
-  const f = state.filters;
-  const where = f.councils.length <= 3 ? f.councils.join(", ").replace(/, ([^,]*)$/, " e $1") : `${f.councils.length} concelhos`;
-  $("#hero-caption").textContent =
-    `${list.length === 1 ? "casa para arrendar bate" : "casas para arrendar batem"} com os teus filtros, até ${eur(f.maxPrice)} em ${where || "nenhum concelho"}.`;
-
-  const week = state.data.generated_at.slice(0, 10);
-  const drops = list.filter((l) => l.last_drop_on && daysBetween(l.last_drop_on, week) <= 7).length;
-  const prices = list.map((l) => l.price_eur).sort((a, b) => a - b);
-  const median = prices.length ? prices[Math.floor(prices.length / 2)] : null;
-
-  const tiles = $("#tiles");
-  tiles.replaceChildren(
-    tile("Publicados nos últimos 3 dias", num(v.new.length)),
-    tile("Baixaram o preço esta semana", num(drops)),
-    tile("Renda mediana com estes filtros", median ? eur(median) : "sem dados"),
-  );
-}
-
-function tile(label, value) {
-  return el("div", { class: "tile" }, el("dt", { text: label }), el("dd", { text: value }));
-}
-
-// -- rendering: cards -------------------------------------------------------
-
-function card(l, { featured = false, mode = "deals", index = 0 } = {}) {
-  const a = el("a", {
-    class: featured ? "card featured" : "card",
-    href: listingUrl(l),
-    target: "_blank",
-    rel: "noopener noreferrer",
-    style: `--i:${Math.min(index, 14)}`,
-  });
-
-  const photo = el("div", { class: "photo" });
-  if (l.thumbnail_url) {
-    const img = el("img", { src: thumbUrl(l), alt: "", loading: index < 6 ? "eager" : "lazy", decoding: "async", referrerpolicy: "no-referrer" });
-    img.addEventListener("error", () => img.replaceWith(el("span", { class: "placeholder" }, icon("house-line"))));
-    photo.append(img);
-  } else {
-    photo.append(el("span", { class: "placeholder" }, icon("house-line")));
-  }
-  a.append(photo);
-
-  const body = el("div", { class: "card-body" });
-
-  const priceRow = el("div", { class: "price-row" },
-    el("span", { class: "price" }, eur(l.price_eur), el("small", { text: " /mês" })));
-  const b = badge(l, mode);
-  if (b) priceRow.append(b);
-  body.append(priceRow);
-
-  const area = l.area_sqm ? `${num(l.area_sqm)} m²` : null;
-  const typ = l.typology ? `${l.property_type === "house" ? "Moradia" : "Apartamento"} ${l.typology}` : (l.property_type === "house" ? "Moradia" : "Apartamento");
-  body.append(el("div", { class: "facts", text: [typ, area].filter(Boolean).join(", ") }));
-  body.append(el("div", { class: "place", text: [l.parish, l.council].filter(Boolean).join(", ") }));
-
-  const meta = el("div", { class: "meta" });
-  if (l.commute_min != null) {
-    const approx = l.geo_precision !== "exact";
-    meta.append(el("span", { title: approx ? "Estimado a partir do centro da freguesia" : "Transporte público, dia útil às 8h" },
-      icon("train"), `${approx ? "~" : ""}${l.commute_min} min`));
-  }
-  if (l.days_on_market != null) {
-    meta.append(el("span", {}, icon("calendar-blank"), l.days_on_market <= 1 ? "anunciado hoje" : `há ${l.days_on_market} dias`));
-  }
-  if (l.n_drops > 0) {
-    meta.append(el("span", {}, icon("trend-down"), l.n_drops === 1 ? "baixou 1 vez" : `baixou ${l.n_drops} vezes`));
-  }
-  if (l.is_private_owner) meta.append(el("span", {}, icon("user"), "particular"));
-  if (l.is_temporary) meta.append(el("span", {}, icon("clock-countdown"), "temporário"));
-  if (l.dupes > 1) meta.append(el("span", {}, icon("buildings"), `${l.dupes} anúncios iguais`));
-  body.append(meta);
-
-  if (featured) {
-    if (l.peer_med_price) {
-      const kind = l.property_type === "house" ? "moradias" : "apartamentos";
-      const who = l.peer_level === "council_any" ? `das ${kind}` : `dos ${kind} ${l.typology}`;
-      const where = l.peer_level === "parish" ? l.parish : l.council;
-      body.append(el("p", { class: "peer", text: `A renda mediana ${who} em ${where} é ${eur(l.peer_med_price)}, entre ${num(l.peer_n)} anúncios.` }));
+  // -- DOM helpers -----------------------------------------------------------
+  function h(tag, attrs, ...kids) {
+    const el = tag === "frag" ? document.createDocumentFragment() : document.createElement(tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (v === null || v === undefined || v === false) continue;
+        if (k === "class") el.className = v;
+        else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
+        else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2).toLowerCase(), v);
+        else if (k === "html") throw new Error("no innerHTML");
+        else if (v === true) el.setAttribute(k, "");
+        else el.setAttribute(k, String(v));
+      }
     }
-    const s = sparkline(l.price_path, 160, 36);
-    if (s) body.append(s);
-  } else if (mode === "negotiate" && l.n_drops > 0) {
-    const s = sparkline(l.price_path, 120, 28);
-    if (s) body.append(s);
+    add(el, kids);
+    return el;
   }
-
-  body.append(el("div", { class: "card-title", text: l.title || "" }));
-  a.append(body);
-  return a;
-}
-
-function badge(l, mode) {
-  if (mode === "negotiate" && l.max_price && l.price_eur < l.max_price) {
-    const pct = Math.round((1 - l.price_eur / l.max_price) * 100);
-    return el("span", { class: "badge", title: `Era ${eur(l.max_price)}` }, icon("arrow-down-right"), `${pct}% mais barato`);
-  }
-  if (l.deal_score != null && l.deal_score >= 5) {
-    return el("span", { class: "badge", title: "Abaixo da mediana dos vizinhos, média entre preço e €/m²" }, `${Math.round(l.deal_score)}% abaixo`);
-  }
-  if (l.deal_score != null && l.deal_score <= -5) {
-    return el("span", { class: "badge plain" }, `${Math.round(-l.deal_score)}% acima`);
-  }
-  return null;
-}
-
-function sparkline(path, w, h) {
-  if (!path || path.length < 2) return null;
-  const pts = path.map(([d, p]) => [new Date(d).getTime(), p]);
-  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs) || x0 + 1;
-  const y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const pad = 5;
-  const sx = (x) => pad + ((x - x0) / (x1 - x0 || 1)) * (w - pad * 2);
-  const sy = (y) => pad + (1 - (y - y0) / (y1 - y0 || 1)) * (h - pad * 2);
-  // stepped: a price holds until the day it changes
-  let d = `M${sx(pts[0][0])},${sy(pts[0][1])}`;
-  for (let i = 1; i < pts.length; i++) d += ` H${sx(pts[i][0])} V${sy(pts[i][1])}`;
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("class", "spark");
-  svg.setAttribute("width", w);
-  svg.setAttribute("height", h);
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", `Preço: ${path.map(([, p]) => eur(p)).join(", depois ")}`);
-  const line = document.createElementNS(ns, "path");
-  line.setAttribute("d", d);
-  line.setAttribute("fill", "none");
-  line.setAttribute("stroke", "var(--accent)");
-  line.setAttribute("stroke-width", "2");
-  line.setAttribute("stroke-linejoin", "round");
-  line.setAttribute("stroke-linecap", "round");
-  const last = pts[pts.length - 1];
-  const dot = document.createElementNS(ns, "circle");
-  dot.setAttribute("cx", sx(last[0]));
-  dot.setAttribute("cy", sy(last[1]));
-  dot.setAttribute("r", "4");
-  dot.setAttribute("fill", "var(--accent)");
-  dot.setAttribute("stroke", "var(--surface)");
-  dot.setAttribute("stroke-width", "2");
-  svg.append(line, dot);
-  return svg;
-}
-
-function renderList(name, list) {
-  const host = $(`#list-${name}`);
-  if (!list.length) {
-    host.replaceChildren(emptyState(name));
-    return;
-  }
-  const n = state.shown[name];
-  const nodes = list.slice(0, n).map((l, i) => card(l, { featured: name === "deals" && i === 0, mode: name, index: i }));
-  host.replaceChildren(...nodes);
-  const panel = host.parentElement;
-  panel.querySelector(".more")?.remove();
-  if (list.length > n) {
-    const more = el("button", { class: "more", type: "button" }, `Mostrar mais ${Math.min(PAGE, list.length - n)} de ${num(list.length - n)}`);
-    more.addEventListener("click", () => { state.shown[name] += PAGE; render(); });
-    panel.append(more);
-  }
-}
-
-function emptyState(name) {
-  const msg = {
-    deals: ["Nada com estes filtros", "Experimenta subir a renda máxima ou juntar outro concelho."],
-    negotiate: ["Ainda não há margem para negociar", "Aparecem aqui anúncios com mais de 60 dias ou que baixaram de preço. Com mais noites de histórico esta lista enche."],
-    new: ["Nada publicado nos últimos três dias", "Com estes filtros não entrou nenhum anúncio novo. O alerta do Telegram avisa quando entrar."],
-  }[name];
-  const reset = el("button", { class: "chip", type: "button" }, "Repor os filtros");
-  reset.addEventListener("click", () => { state.filters = structuredClone(DEFAULTS); saveFilters(); buildFilters(); render(); });
-  return el("div", { class: "empty" }, icon(name === "new" ? "sparkle" : "funnel"),
-    el("h3", { text: msg[0] }), el("p", { text: msg[1] }), name === "deals" ? reset : null);
-}
-
-// -- rendering: map -----------------------------------------------------------
-
-function scoreColor(s) {
-  const css = getComputedStyle(document.documentElement);
-  if (s == null || s < 5) return css.getPropertyValue("--neutral-mark").trim();
-  if (s < 15) return css.getPropertyValue("--seq-1").trim();
-  if (s < 25) return css.getPropertyValue("--seq-2").trim();
-  if (s < 35) return css.getPropertyValue("--seq-3").trim();
-  return css.getPropertyValue("--seq-4").trim();
-}
-
-function isDark() {
-  const t = document.documentElement.dataset.theme;
-  return t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
-}
-
-function renderMap(list) {
-  if (!window.L) return;
-  const exact = list.filter((l) => l.geo_precision === "exact" && l.geo_lat != null);
-  $("#map-note").textContent = exact.length === list.length
-    ? `${num(exact.length)} anúncios no mapa, coloridos pelo desconto face aos vizinhos.`
-    : `${num(exact.length)} de ${num(list.length)} anúncios têm coordenadas exatas e estão no mapa. As restantes chegam nas próximas noites, à medida que as páginas de detalhe são lidas.`;
-
-  if (!state.map) {
-    state.map = L.map("map", { zoomControl: true, attributionControl: true }).setView([38.77, -9.15], 12);
-  }
-  // OpenStreetMap's own tiles: free for light personal use with attribution.
-  // There is no dark style, so dark mode inverts them in CSS (.map-dark).
-  if (!state.tiles) {
-    state.tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    }).addTo(state.map);
-  }
-  $("#map").classList.toggle("map-dark", isDark());
-  state.mapLayer?.remove();
-  const surface = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim();
-  const markers = exact
-    .sort((a, b) => (a.deal_score ?? -99) - (b.deal_score ?? -99)) // best on top
-    .map((l) => {
-      const m = L.circleMarker([l.geo_lat, l.geo_lon], {
-        radius: 6, weight: 2, color: surface, fillColor: scoreColor(l.deal_score), fillOpacity: 1,
-      });
-      m.bindPopup(() => popup(l), { maxWidth: 260 });
-      return m;
-    });
-  state.mapLayer = L.layerGroup(markers).addTo(state.map);
-  setTimeout(() => state.map.invalidateSize(), 0);
-
-  const legend = $("#map-legend");
-  legend.replaceChildren(
-    ...[["35% ou mais abaixo", 40], ["25 a 35%", 30], ["15 a 25%", 20], ["5 a 15%", 10], ["na média ou acima", 0]].map(([label, s]) =>
-      el("span", {}, el("i", { class: "sw", style: `background:${scoreColor(s)}` }), label)),
-  );
-}
-
-function popup(l) {
-  const box = el("div");
-  box.append(el("div", { class: "pop-price", text: eur(l.price_eur) }));
-  box.append(el("div", { text: [l.typology, l.area_sqm ? `${num(l.area_sqm)} m²` : null].filter(Boolean).join(", ") }));
-  box.append(el("div", { text: [l.parish, l.council].filter(Boolean).join(", ") }));
-  const bits = [];
-  if (l.deal_score != null) bits.push(l.deal_score >= 0 ? `${Math.round(l.deal_score)}% abaixo dos vizinhos` : `${Math.round(-l.deal_score)}% acima dos vizinhos`);
-  if (l.commute_min != null) bits.push(`${l.commute_min} min até ${state.data.commute?.label || "ao trabalho"}`);
-  if (bits.length) box.append(el("div", { text: bits.join(". ") }));
-  box.append(el("a", { href: listingUrl(l), target: "_blank", rel: "noopener noreferrer", text: "Abrir no Imovirtual" }));
-  return box;
-}
-
-// -- rendering: market ----------------------------------------------------------
-
-function seriesColor(i) {
-  return getComputedStyle(document.documentElement).getPropertyValue(`--series-${i + 1}`).trim();
-}
-
-function renderMarket() {
-  const rows = state.data.market_daily.filter((r) => FOCUS_COUNCILS.includes(r.council));
-  const days = [...new Set(rows.map((r) => r.day))].sort();
-  const chart = $("#market-chart");
-  const legend = $("#market-legend");
-  legend.replaceChildren(...FOCUS_COUNCILS.map((c, i) =>
-    el("span", {}, el("i", { class: "ln", style: `background:${seriesColor(i)}` }), c)));
-
-  renderMarketTable(rows, days);
-
-  if (days.length < 7) {
-    const d = state.data.totals.history_days;
-    chart.replaceChildren(el("div", { class: "chart-empty", text:
-      `Esta linha precisa de pelo menos uma semana de recolha para dizer alguma coisa. Por agora há ${d} ${d === 1 ? "dia" : "dias"} de histórico, e a renda em Lisboa tem sazonalidade forte: só com meses dá para ler tendência.` }));
-    return;
-  }
-
-  const W = Math.max(chart.clientWidth, 320), H = 260;
-  const m = { t: 10, r: 78, b: 26, l: 40 };
-  const x = (d) => m.l + (days.indexOf(d) / Math.max(days.length - 1, 1)) * (W - m.l - m.r);
-  const vals = rows.map((r) => r.ppm);
-  const lo = Math.floor(Math.min(...vals) - 1), hi = Math.ceil(Math.max(...vals) + 1);
-  const y = (v) => m.t + (1 - (v - lo) / (hi - lo || 1)) * (H - m.t - m.b);
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.setAttribute("height", H);
-  svg.setAttribute("role", "img");
-  svg.setAttribute("aria-label", "Renda mediana por m² ao longo do tempo, por concelho");
-  const add = (tag, attrs, text) => {
-    const n = document.createElementNS(ns, tag);
-    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
-    if (text != null) n.textContent = text;
-    svg.append(n);
-    return n;
-  };
-
-  const ticks = 4;
-  for (let i = 0; i <= ticks; i++) {
-    const v = lo + ((hi - lo) * i) / ticks;
-    add("line", { class: "grid-line", x1: m.l, x2: W - m.r, y1: y(v), y2: y(v) });
-    add("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end" }, `€${num(v)}`);
-  }
-  const fmtDay = (d) => new Date(d).toLocaleDateString("pt-PT", { day: "numeric", month: "short" });
-  [days[0], days[Math.floor(days.length / 2)], days[days.length - 1]].forEach((d, i) =>
-    add("text", { x: x(d), y: H - 6, "text-anchor": ["start", "middle", "end"][i] }, fmtDay(d)));
-
-  const bySeries = FOCUS_COUNCILS.map((c) => rows.filter((r) => r.council === c));
-  bySeries.forEach((pts, i) => {
-    if (!pts.length) return;
-    add("path", {
-      d: pts.map((p, j) => `${j ? "L" : "M"}${x(p.day)},${y(p.ppm)}`).join(" "),
-      fill: "none", stroke: seriesColor(i), "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round",
-    });
-    const last = pts[pts.length - 1];
-    add("circle", { cx: x(last.day), cy: y(last.ppm), r: 4, fill: seriesColor(i), stroke: "var(--surface)", "stroke-width": 2 });
-    add("text", { class: "label", x: x(last.day) + 10, y: y(last.ppm) + 4 }, `${FOCUS_COUNCILS[i]} €${num(last.ppm, 1)}`);
-  });
-
-  const cross = add("line", { x1: 0, x2: 0, y1: m.t, y2: H - m.b, stroke: "var(--muted)", "stroke-width": 1, opacity: 0 });
-  const hit = add("rect", { x: m.l, y: 0, width: W - m.l - m.r, height: H, fill: "transparent" });
-  const tip = $("#tooltip");
-  const move = (ev) => {
-    const box = svg.getBoundingClientRect();
-    const px = ((ev.clientX - box.left) / box.width) * W;
-    const i = Math.round(((px - m.l) / (W - m.l - m.r)) * (days.length - 1));
-    const d = days[Math.max(0, Math.min(days.length - 1, i))];
-    cross.setAttribute("x1", x(d)); cross.setAttribute("x2", x(d)); cross.setAttribute("opacity", 1);
-    tip.replaceChildren(el("div", { class: "tt-head", text: fmtDay(d) }),
-      ...FOCUS_COUNCILS.map((c, k) => {
-        const r = rows.find((r) => r.council === c && r.day === d);
-        return el("div", { class: "tt-row" }, el("i", { class: "key", style: `background:${seriesColor(k)}` }),
-          el("b", { text: r ? `€${num(r.ppm, 1)}/m²` : "sem dados" }), el("span", { text: c }));
-      }));
-    tip.hidden = false;
-    tip.style.left = `${Math.min(ev.clientX + 14, innerWidth - 190)}px`;
-    tip.style.top = `${ev.clientY + 14}px`;
-  };
-  hit.addEventListener("pointermove", move);
-  hit.addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("opacity", 0); });
-  chart.replaceChildren(svg);
-}
-
-function renderMarketTable(rows, days) {
-  const t = $("#market-table");
-  const head = el("tr", {}, el("th", { text: "Dia" }), ...FOCUS_COUNCILS.map((c) => el("th", { class: "num", text: c })));
-  const body = [...days].reverse().map((d) => el("tr", {}, el("td", { text: d }),
-    ...FOCUS_COUNCILS.map((c) => {
-      const r = rows.find((r) => r.council === c && r.day === d);
-      return el("td", { class: "num", text: r ? `€${num(r.ppm, 2)} (n=${r.n})` : "" });
-    })));
-  t.replaceChildren(el("thead", {}, head), el("tbody", {}, ...body));
-}
-
-function renderParishes() {
-  const f = state.filters;
-  const flats = state.data.parishes.filter((p) => p.property_type === "flat" && f.councils.includes(p.council));
-  const key = (p) => `${p.council}|${p.parish}`;
-  const rows = new Map();
-  for (const p of flats) {
-    const r = rows.get(key(p)) || { council: p.council, parish: p.parish, T1: null, T2: null, T3: null, ppm: [], n: 0 };
-    if (["T1", "T2", "T3"].includes(p.typology)) r[p.typology] = p;
-    r.ppm.push([p.median_price_per_sqm, p.n_listings]);
-    r.n += p.n_listings;
-    rows.set(key(p), r);
-  }
-  const list = [...rows.values()].map((r) => ({
-    ...r,
-    // weighted median-of-medians is a rough figure; labelled "aprox." in the header
-    ppmAll: r.ppm.reduce((s, [v, n]) => s + v * n, 0) / Math.max(r.n, 1),
-  }));
-
-  const { key: sk, dir } = state.parishSort;
-  const val = (r) => sk === "parish" ? r.parish : sk === "council" ? r.council
-    : sk === "ppm" ? r.ppmAll : sk === "n" ? r.n : (r[sk]?.median_price ?? Infinity);
-  list.sort((a, b) => {
-    const A = val(a), B = val(b);
-    return (typeof A === "string" ? A.localeCompare(B, "pt") : A - B) * dir;
-  });
-
-  const cols = [["parish", "Freguesia"], ["council", "Concelho"], ["T1", "T1", true], ["T2", "T2", true], ["T3", "T3", true], ["ppm", "€/m² aprox.", true], ["n", "Anúncios", true]];
-  const head = el("tr", {}, ...cols.map(([k, label, isNum]) => {
-    const th = el("th", { class: isNum ? "num" : null, scope: "col", tabindex: "0", "aria-sort": sk === k ? (dir > 0 ? "ascending" : "descending") : null, text: label });
-    const go = () => { state.parishSort = { key: k, dir: sk === k ? -dir : 1 }; renderParishes(); };
-    th.addEventListener("click", go);
-    th.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
-    return th;
-  }));
-  const cell = (p) => {
-    if (!p) return el("td", { class: "num thin", text: "" });
-    return el("td", { class: p.n_listings < 8 ? "num thin" : "num" }, eur(p.median_price), el("span", { class: "n", text: `n=${p.n_listings}` }));
-  };
-  const body = list.map((r) => el("tr", {},
-    el("td", { text: r.parish || "sem freguesia" }), el("td", { class: "sub", text: r.council }),
-    cell(r.T1), cell(r.T2), cell(r.T3),
-    el("td", { class: "num", text: `€${num(r.ppmAll, 1)}` }), el("td", { class: "num", text: num(r.n) })));
-  $("#parish-table").replaceChildren(el("thead", {}, head), el("tbody", {}, ...body));
-}
-
-// -- filters UI -------------------------------------------------------------------
-
-function chipGroup(host, options, selected, onToggle) {
-  host.replaceChildren(...options.map(([value, label]) => {
-    const b = el("button", { class: "chip", type: "button", "aria-pressed": selected.includes(value) ? "true" : "false", text: label });
-    b.addEventListener("click", () => onToggle(value));
-    return b;
-  }));
-}
-
-function toggle(arr, v) {
-  return arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v];
-}
-
-function buildFilters() {
-  const f = state.filters;
-  const all = [...new Set(state.data.listings.map((l) => l.council).filter(Boolean))];
-  const counts = Object.fromEntries(all.map((c) => [c, state.data.listings.filter((l) => l.council === c).length]));
-  const extra = f.councils.filter((c) => !FOCUS_COUNCILS.includes(c));
-  const shownCouncils = [...FOCUS_COUNCILS, ...extra];
-
-  const councilHost = $("#f-council");
-  chipGroup(councilHost, shownCouncils.map((c) => [c, c]), f.councils, (c) => {
-    f.councils = toggle(f.councils, c); commit();
-  });
-  const others = all.filter((c) => !shownCouncils.includes(c)).sort((a, b) => counts[b] - counts[a]);
-  if (others.length) {
-    const sel = el("select", { class: "chip", "aria-label": "Juntar outro concelho" }, el("option", { value: "", text: "+ concelho" }),
-      ...others.map((c) => el("option", { value: c, text: `${c} (${counts[c]})` })));
-    sel.addEventListener("change", () => { if (sel.value) { f.councils = [...f.councils, sel.value]; commit(); } });
-    councilHost.append(sel);
-  }
-
-  chipGroup($("#f-typology"), TYPOLOGIES.map((t) => [t, t]), f.typologies, (t) => { f.typologies = toggle(f.typologies, t); commit(); });
-  chipGroup($("#f-type"), TYPES, f.types, (t) => { f.types = toggle(f.types, t); commit(); });
-
-  const price = $("#f-price");
-  price.value = f.maxPrice || "";
-  price.oninput = () => { f.maxPrice = Number(price.value) || 0; commit(false); };
-
-  const hasCommute = !!state.data.commute;
-  $("#field-commute").hidden = !hasCommute;
-  if (hasCommute) $("#commute-label").textContent = `Até ${state.data.commute.label}`;
-  if (!hasCommute) f.maxCommute = "";
-  const commute = $("#f-commute");
-  commute.value = f.maxCommute;
-  commute.onchange = () => { f.maxCommute = commute.value; commit(); };
-
-  const temp = $("#f-temp");
-  temp.checked = f.temp;
-  temp.onchange = () => { f.temp = temp.checked; commit(); };
-}
-
-let debounce;
-function commit(rebuild = true) {
-  saveFilters();
-  state.shown = { deals: PAGE, negotiate: PAGE, new: PAGE };
-  if (rebuild) buildFilters();
-  clearTimeout(debounce);
-  debounce = setTimeout(render, rebuild ? 0 : 180);
-}
-
-// -- tabs -------------------------------------------------------------------------
-
-function setupTabs() {
-  const buttons = [...document.querySelectorAll("#tabs [role=tab]")];
-  const select = (btn, focus) => {
-    for (const b of buttons) {
-      const on = b === btn;
-      b.setAttribute("aria-selected", on ? "true" : "false");
-      b.tabIndex = on ? 0 : -1;
-      $(`#tab-${b.dataset.tab}`).hidden = !on;
+  function add(el, ...kids) {
+    for (const k of kids.flat(Infinity)) {
+      if (k === null || k === undefined || k === false) continue;
+      el.appendChild(k instanceof Node ? k : document.createTextNode(String(k)));
     }
-    state.tab = btn.dataset.tab;
-    if (focus) btn.focus();
-    try { localStorage.setItem("apscrap.tab", state.tab); } catch (_) { /* ignore */ }
+    return el;
+  }
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function s(tag, attrs, ...kids) {
+    const el = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined) el.setAttribute(k, String(v));
+    for (const k of kids.flat()) if (k) el.appendChild(k instanceof Node ? k : document.createTextNode(String(k)));
+    return el;
+  }
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); return el; }
+  App.h = h; App.s = s; App.clear = clear; App.add = add;
+
+  // -- formatting ------------------------------------------------------------
+  const nfCache = {};
+  function nf(n, d = 0) {
+    if (n === null || n === undefined || isNaN(n)) return "–";
+    const key = d;
+    nfCache[key] = nfCache[key] || new Intl.NumberFormat("pt-PT", { minimumFractionDigits: d, maximumFractionDigits: d });
+    return nfCache[key].format(Number(n));
+  }
+  App.nf = nf;
+  App.eur = (n, d = 0) => (n === null || n === undefined ? "–" : nf(n, d) + " €");
+  App.price = (r) => (r.transaction_type === "sale" || App.state.mode === "sale" && !r.transaction_type ? App.eur(r.price_eur) : App.eur(r.price_eur) + "/mês");
+  App.ppm = (v, mode) => (v === null || v === undefined ? "–" : mode === "sale" ? nf(v) + " €/m²" : nf(v, 1) + " €/m²");
+  App.days = (d) => (d === null || d === undefined ? "" : d === 1 ? "1 dia" : nf(d) + " dias");
+  App.dateShort = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleDateString("pt-PT", { day: "numeric", month: "short", year: d.getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+  };
+  App.ago = (iso) => {
+    if (!iso) return "";
+    const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    if (days <= 0) return "hoje";
+    if (days === 1) return "ontem";
+    if (days < 30) return "há " + days + " dias";
+    return App.dateShort(iso);
+  };
+  App.short = (p) => {
+    if (!p) return "";
+    let first = p.split(/,| e (?=[A-ZÁÉÍÓÚÂÊÔÃÕ])/)[0].trim();
+    first = first.replace(/\bSanta\b/g, "Sta.").replace(/\bSanto\b/g, "Sto.").replace(/\bSão\b/g, "S.");
+    if (first === "Parque das Nações") return "P. Nações";
+    return first;
+  };
+
+  // -- API --------------------------------------------------------------------
+  async function api(path, opts = {}) {
+    const init = { credentials: "same-origin", headers: {} };
+    if (opts.method) init.method = opts.method;
+    if (opts.body !== undefined) {
+      if (opts.body instanceof FormData) init.body = opts.body;
+      else { init.body = JSON.stringify(opts.body); init.headers["Content-Type"] = "application/json"; }
+      init.method = init.method || "POST";
+    }
+    const r = await fetch("/api/" + path, init);
+    if (r.status === 401) {
+      // The Access session expired: reload so Access can sign us in again.
+      location.reload();
+      throw new Error("sessão expirada");
+    }
+    const ct = r.headers.get("content-type") || "";
+    const data = ct.includes("json") ? await r.json() : await r.text();
+    if (!r.ok) throw new Error((data && (data.detail || data.error)) || "erro " + r.status);
+    return data;
+  }
+  App.api = api;
+  App.qs = (o) => Object.entries(o).filter(([, v]) => v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && !v.length) && v !== false)
+    .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(Array.isArray(v) ? v.join(",") : v === true ? "1" : v)).join("&");
+
+  let toastTimer;
+  App.toast = (msg) => {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 2800);
+  };
+
+  // -- icons (inline stroke SVG) ------------------------------------------------
+  const ICONS = {
+    spark: ["M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z", "M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"],
+    heart: ["M12 20s-7-4.4-9-8.6C1.6 8.3 3.6 5 7 5c2 0 3.3 1.1 5 3 1.7-1.9 3-3 5-3 3.4 0 5.4 3.3 4 6.4C19 15.6 12 20 12 20z"],
+    left: ["M15 5l-7 7 7 7"], right: ["M9 5l7 7-7 7"], out: ["M7 17L17 7", "M9 7h8v8"],
+    send: ["M5 12h14", "M13 6l6 6-6 6"], db: ["M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z", "M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6", "M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"],
+    refresh: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"], x: ["M6 6l12 12", "M18 6L6 18"], camera: ["M4 8h3l2-3h6l2 3h3v11H4z", "M12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"],
+  };
+  App.icon = (name, size = 18, color = "currentColor", fill = "none") =>
+    s("svg", { width: size, height: size, viewBox: "0 0 24 24", fill, stroke: color, "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", class: name === "spark" ? "spark-ic" : null },
+      ...(ICONS[name] || []).map((d) => s("path", { d })));
+
+  // -- shared state -------------------------------------------------------------
+  App.state.mode = (() => { try { return localStorage.getItem("cc.mode"); } catch (e) { return null; } })();
+  App.setMode = (m) => { App.state.mode = m; try { localStorage.setItem("cc.mode", m); } catch (e) { /* private window */ } };
+  App.users = () => (App.state.me && App.state.me.users) || {};
+  App.me = () => (App.state.me && App.state.me.user) || {};
+  App.other = () => (App.me().slot === "a" ? "b" : "a");
+  App.userName = (slot) => (App.users()[slot] && App.users()[slot].name) || (slot === "a" ? "A" : "Parceira");
+  App.initial = (slot) => (App.users()[slot] ? App.users()[slot].name.charAt(0).toUpperCase() : "+1");
+
+  async function loadMe() {
+    App.state.me = await api("me");
+    const pc = App.state.me.settings.property_criteria;
+    if (!App.state.mode) App.state.mode = pc.mode || "rent";
+    return App.state.me;
+  }
+  App.reloadMe = loadMe;
+
+  // -- header -------------------------------------------------------------------
+  const TABS = [
+    ["imoveis", "Imóveis"], ["carros", "Carros"], ["anuncios", "Anúncios"], ["shortlist", "Shortlist"], ["assistente", "Assistente"],
+  ];
+  function renderHeader(route) {
+    const top = clear(document.getElementById("top"));
+    const upd = App.state.me && App.state.me.updated_at;
+    const tabs = h("nav", { class: "tabs", "aria-label": "Secções" },
+      TABS.map(([id, label]) => h("a", { href: "#/" + id, "aria-current": route === id || (route === "comparar" && id === "shortlist") ? "page" : null },
+        id === "assistente" ? App.icon("spark", 16) : null, label)));
+    const users = App.users();
+    const avatars = h("a", { class: "avatars", href: "#/definicoes", "aria-label": "Definições: " + ["a", "b"].map((x) => users[x] ? users[x].name : "por configurar").join(" e ") },
+      h("span", { class: "avatar slot-a" }, App.initial("a")),
+      h("span", { class: "avatar " + (users.b ? "slot-b" : "avatar-empty") }, App.initial("b")));
+    add(top, [
+      h("a", { class: "brand", href: "#/imoveis" }, h("b", null, "Casa & Carro"),
+        h("span", null, "Painel a dois" + (upd ? " · dados de " + App.dateShort(upd) : ""))),
+      tabs,
+      h("div", { class: "top-right" }, App.state.headerExtra || null, avatars),
+    ]);
+  }
+  App.renderHeader = renderHeader;
+
+  // -- router -------------------------------------------------------------------
+  function parse() {
+    const raw = location.hash.replace(/^#\/?/, "") || "imoveis";
+    const [path, query] = raw.split("?");
+    const parts = path.split("/");
+    return { route: parts[0], arg: parts[1], params: new URLSearchParams(query || "") };
+  }
+  App.route = parse;
+  App.go = (hash) => { if (location.hash === hash) render(); else location.hash = hash; };
+  App.setQuery = (params, replace = true) => {
+    const { route, arg } = parse();
+    const q = App.qs(params);
+    const hash = "#/" + route + (arg ? "/" + arg : "") + (q ? "?" + q : "");
+    if (replace) history.replaceState(null, "", hash); else location.hash = hash;
+  };
+
+  let renderSeq = 0;
+  async function render() {
+    const seq = ++renderSeq;
+    const { route, arg, params } = parse();
+    const page = App.pages[route] || App.pages.imoveis;
+    App.state.headerExtra = null;
+    const view = clear(document.getElementById("view"));
+    view.appendChild(h("p", { class: "loading" }, "A carregar…"));
+    try {
+      const node = await page.render({ arg, params, isCurrent: () => seq === renderSeq });
+      if (seq !== renderSeq) return;
+      renderHeader(page.tab || route);
+      clear(view).appendChild(node);
+      if (page.after) page.after(node);
+      document.title = (page.title ? page.title + " · " : "") + "Casa & Carro";
+    } catch (err) {
+      if (seq !== renderSeq) return;
+      renderHeader(route);
+      clear(view).appendChild(h("div", { class: "empty" }, h("b", null, "Não consegui carregar esta página"), h("span", { class: "muted" }, String(err.message || err)),
+        h("button", { class: "btn dark", type: "button", onclick: render }, "Tentar outra vez")));
+      console.error(err);
+    }
+  }
+  App.render = render;
+
+  App.start = async () => {
+    window.addEventListener("hashchange", () => { window.scrollTo(0, 0); render(); });
+    try {
+      await loadMe();
+    } catch (err) {
+      clear(document.getElementById("view")).appendChild(h("div", { class: "empty" }, h("b", null, "Sem acesso"), h("span", { class: "muted" }, String(err.message || err))));
+      return;
+    }
     render();
   };
-  buttons.forEach((b, i) => {
-    b.addEventListener("click", () => select(b));
-    b.addEventListener("keydown", (e) => {
-      if (e.key === "ArrowRight") select(buttons[(i + 1) % buttons.length], true);
-      if (e.key === "ArrowLeft") select(buttons[(i - 1 + buttons.length) % buttons.length], true);
+
+  // -- shared widgets -------------------------------------------------------------
+
+  /* Badge for how an advert compares with its neighbours (IM-2). */
+  App.dealBadge = (pct) => {
+    if (pct === null || pct === undefined) return null;
+    if (pct >= 5) return h("span", { class: "pill solid-good badge" }, nf(pct) + "% abaixo");
+    if (pct <= -5) return h("span", { class: "pill solid-bad badge" }, nf(-pct) + "% acima");
+    return h("span", { class: "pill light badge" }, "Preço justo");
+  };
+
+  /* "12% abaixo da mediana de T2 em Loures (n=34)" */
+  App.fairSentence = (r) => {
+    if (r.discount_pct === null || r.discount_pct === undefined || !r.peer_n) return "Sem vizinhos suficientes para comparar (menos de 8 anúncios semelhantes).";
+    const where = r.peer_level === "parish" ? App.short(r.parish) : r.council;
+    const what = r.peer_level === "council_any" ? (r.property_type === "house" ? "moradias" : "casas") : (r.typology || "casas");
+    const pct = Math.abs(r.discount_pct);
+    const dir = r.discount_pct >= 0 ? "abaixo" : "acima";
+    return nf(pct) + "% " + dir + " da mediana de " + what + " em " + where + " (n=" + r.peer_n + ", por m²)";
+  };
+
+  App.historyLine = (r) => {
+    const bits = [];
+    if (r.n_relists > 0) bits.push("republicado " + (r.n_relists === 1 ? "1 vez" : r.n_relists + " vezes"));
+    if (r.n_drops > 0) bits.push(r.n_drops === 1 ? "baixou " + (r.last_drop_on ? App.ago(r.last_drop_on) : "") : "baixou " + r.n_drops + " vezes");
+    if (r.max_price && r.price_eur < r.max_price) bits.push("−" + App.eur(r.max_price - r.price_eur) + " no total");
+    const d = r.chain_days_on_market ?? r.days_on_market;
+    if (!bits.length && d !== null && d !== undefined && d <= 3) return "Novo · " + App.ago(r.first_seen_at || r.listed_at);
+    if (!bits.length) return "Sem alterações de preço";
+    return bits.join(" · ").replace(/^./, (c) => c.toUpperCase());
+  };
+
+  /* Minutes to each person's workplace. */
+  App.commuteChips = (c, compact) => {
+    if (!c) return null;
+    const out = [];
+    for (const slot of ["a", "b"]) {
+      const t = c[slot + "_transit"], car = c[slot + "_car"];
+      if (t === undefined && car === undefined) continue;
+      const txt = (compact ? App.initial(slot) + " " : App.userName(slot) + ": ") + (t !== undefined ? t + " min" : "") + (t !== undefined && car !== undefined ? " · " : "") + (car !== undefined ? "🚗 " + car : "");
+      out.push(h("span", { class: "slot-" + slot, title: (t !== undefined ? t + " min de transportes" : "") + (car !== undefined ? ", " + car + " min de carro sem trânsito" : "") }, txt));
+    }
+    return out.length ? h("span", { class: "commute" }, out) : null;
+  };
+
+  /* Votes: mine cycles gosto → talvez → não → sem voto; the other's is shown. */
+  const VOTE_LABEL = { gosto: "Gosto", talvez: "Talvez", nao: "Não" };
+  const NEXT = { undefined: "gosto", gosto: "talvez", talvez: "nao", nao: null };
+  App.votes = (kind, id, votes, onChange) => {
+    votes = votes || {};
+    const me = App.me().slot, other = App.other();
+    const wrap = h("div", { class: "votes" });
+    const draw = () => {
+      clear(wrap);
+      const mine = votes[me];
+      add(wrap, [
+        h("button", { type: "button", class: "vote " + me + (mine === "gosto" ? " on" : ""), "aria-label": "O teu voto: " + (VOTE_LABEL[mine] || "sem voto") + ". Tocar para mudar",
+          onclick: async () => {
+            const nv = NEXT[mine];
+            try {
+              await api("vote", { body: { kind, item_id: id, vote: nv } });
+              if (nv) votes[me] = nv; else delete votes[me];
+              draw();
+              if (onChange) onChange(votes);
+            } catch (e) { App.toast(e.message); }
+          } }, App.initial(me) + " · " + (VOTE_LABEL[mine] || "Votar")),
+        h("button", { type: "button", disabled: true, class: "vote " + other + (votes[other] === "gosto" ? " on" : ""), "aria-label": "Voto de " + App.userName(other) + ": " + (VOTE_LABEL[votes[other]] || "sem voto") },
+          App.initial(other) + " · " + (VOTE_LABEL[votes[other]] || "Sem voto")),
+      ]);
+    };
+    draw();
+    return wrap;
+  };
+
+  App.saveButton = (kind, id, saved, label) => {
+    const btn = h("button", { type: "button", class: "icon-btn save", "aria-pressed": saved ? "true" : "false" });
+    const draw = () => {
+      clear(btn).appendChild(App.icon("heart", 20, "#C2622D", saved ? "#C2622D" : "none"));
+      btn.setAttribute("aria-pressed", saved ? "true" : "false");
+      btn.setAttribute("aria-label", (saved ? "Remover " : "Guardar ") + label + (saved ? " da shortlist" : " na shortlist"));
+    };
+    btn.addEventListener("click", async () => {
+      try {
+        await api("shortlist", { body: { kind, item_id: id, saved: !saved } });
+        saved = !saved;
+        draw();
+        App.toast(saved ? "Guardado na shortlist" : "Removido da shortlist");
+      } catch (e) { App.toast(e.message); }
     });
-  });
-  let saved = null;
-  try { saved = localStorage.getItem("apscrap.tab"); } catch (_) { /* ignore */ }
-  const start = buttons.find((b) => b.dataset.tab === saved);
-  if (start) select(start);
-}
+    draw();
+    return btn;
+  };
 
-function setTabCounts(v) {
-  for (const name of ["deals", "negotiate", "new"]) {
-    const btn = $(`#t-${name}`);
-    let c = btn.querySelector(".count");
-    if (!c) { c = el("span", { class: "count" }); btn.append(c); }
-    c.textContent = num(v[name].length);
-  }
-}
+  /* Photo with prev/next over the advert's own photos. */
+  App.gallery = (urls, alt, cls) => {
+    urls = (urls || []).filter(Boolean);
+    let i = 0;
+    const img = urls.length ? h("img", { src: urls[0], alt, loading: "lazy", referrerpolicy: "no-referrer" }) : null;
+    const count = urls.length > 1 ? h("span", { class: "count" }, "1 de " + urls.length) : null;
+    const move = (d) => (e) => {
+      e.preventDefault();
+      i = (i + d + urls.length) % urls.length;
+      img.src = urls[i];
+      count.textContent = i + 1 + " de " + urls.length;
+    };
+    return h("div", { class: cls || "photo" }, img || h("span", { class: "xsmall muted" }, "Sem foto"),
+      urls.length > 1 ? h("button", { type: "button", class: "icon-btn prev", "aria-label": "Foto anterior", onclick: move(-1) }, App.icon("left")) : null,
+      urls.length > 1 ? h("button", { type: "button", class: "icon-btn next", "aria-label": "Foto seguinte", onclick: move(1) }, App.icon("right")) : null,
+      count);
+  };
 
-// -- top level --------------------------------------------------------------------
+  App.listingCard = (r, opts = {}) => {
+    const mode = r.transaction_type || App.state.mode;
+    const title = (r.typology ? r.typology + " · " : "") + App.short(r.parish || r.council || "");
+    const photos = (r.image_urls && r.image_urls.length ? r.image_urls : [r.thumbnail_url]).filter(Boolean);
+    const photo = App.gallery(photos, title);
+    const badge = App.dealBadge(r.discount_pct);
+    if (badge) photo.appendChild(badge);
+    photo.appendChild(App.saveButton("listing", r.id, r.saved, title));
+    const tags = [...(r.extras || [])];
+    if (r.is_temporary) tags.unshift("Temporário");
+    if (r.property_type === "house") tags.unshift("Moradia");
+    const d = r.chain_days_on_market ?? r.days_on_market;
+    return h("article", { class: "lcard" + (opts.compact ? " deal-card" : "") },
+      photo,
+      h("div", { class: "body" },
+        h("div", { class: "t" }, h("h3", null, h("a", { href: "#/anuncio/" + r.id }, title)), h("div", { class: "price" }, mode === "sale" ? App.eur(r.price_eur) : App.eur(r.price_eur) + "/mês")),
+        h("div", { class: "small muted" }, (r.area_sqm ? nf(r.area_sqm) + " m² · " : "") + App.ppm(r.price_per_sqm, mode) + (mode === "rent" ? " por mês" : "")),
+        r.peer_med_ppm ? h("div", { class: "small muted" }, "Mediana da zona: " + App.ppm(r.peer_med_ppm, mode) + " (n=" + r.peer_n + ")") : null,
+        tags.length && !opts.compact ? h("div", { class: "tags" }, tags.slice(0, 5).map((t) => h("span", null, t))) : null,
+        h("div", { class: "hist" }, App.historyLine(r)),
+        opts.votes ? App.votes("listing", r.id, r.votes) : null,
+        h("div", { class: "foot" },
+          h("span", { class: "xsmall muted" }, d !== null && d !== undefined ? App.days(d) + " no mercado" : "", " ", App.commuteChips(r.commute, true)),
+          h("a", { class: "btn dark", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Imovirtual", App.icon("out", 14)))));
+  };
 
-function render() {
-  if (!state.data) return;
-  const list = state.data.listings.filter(matches);
-  const v = views(list);
-  renderSummary(list, v);
-  setTabCounts(v);
-  if (["deals", "negotiate", "new"].includes(state.tab)) renderList(state.tab, v[state.tab]);
-  if (state.tab === "map") renderMap(list);
-  if (state.tab === "market") { renderMarket(); renderParishes(); }
-}
+  /* Sparkline from [[date, value], ...]. */
+  App.sparkline = (points, aria) => {
+    const svg = s("svg", { viewBox: "0 0 240 64", preserveAspectRatio: "none", role: "img", "aria-label": aria || "evolução", class: "spark" });
+    if (!points || points.length < 2) return svg;
+    const vals = points.map((p) => Number(p[1]));
+    const mn = Math.min(...vals), mx = Math.max(...vals), rg = mx - mn || 1;
+    const xy = vals.map((v, i) => [6 + i * (228 / (vals.length - 1)), 58 - ((v - mn) / rg) * 50]);
+    const line = xy.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+    svg.appendChild(s("path", { d: line + " L234 64 L6 64 Z", fill: "#E6E9EE" }));
+    svg.appendChild(s("path", { d: line, fill: "none", stroke: "#22385A", "stroke-width": 2, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }));
+    return svg;
+  };
 
-function renderMeta() {
-  const d = state.data;
-  const t = d.totals;
-  const when = new Date(d.generated_at);
-  const hhmm = when.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" });
-  const sameDay = when.toDateString() === new Date().toDateString();
-  $("#updated").textContent = sameDay ? `Atualizado hoje às ${hhmm}`
-    : `Atualizado a ${when.toLocaleDateString("pt-PT", { day: "numeric", month: "short" })}, ${hhmm}`;
-  $("#footer").replaceChildren(
-    el("p", { text: `${num(t.active_rent)} arrendamentos e ${num(t.active_sale)} vendas ativos no distrito de Lisboa, recolhidos do Imovirtual desde ${new Date(t.history_from).toLocaleDateString("pt-PT", { day: "numeric", month: "long", year: "numeric" })} (${t.history_days} ${t.history_days === 1 ? "dia" : "dias"} de histórico).` }),
-    el("p", { text: d.commute ? `Tempo até ${d.commute.label} de transporte público, num dia útil às 8h, calculado com os horários GTFS da AML. "~" quer dizer que o anúncio ainda não tem coordenadas e o tempo vem do centro da freguesia.` : "O tempo de deslocamento aparece depois de carregada a grelha de transportes." }),
-    el("p", { text: "Preço pedido não é preço fechado, e um anúncio que desaparece não quer dizer que arrendou." }),
-  );
-}
+  /* Small safe markdown for the agent's answers: paragraphs, lists, **bold**
+     and links to app routes or http(s). Everything else stays text. */
+  App.markdown = (text) => {
+    const out = h("div", { class: "text" });
+    const blocks = String(text || "").split(/\n{2,}/);
+    const inline = (str) => {
+      const frag = document.createDocumentFragment();
+      const re = /(\*\*([^*]+)\*\*)|(\[([^\]]+)\]\(([^)\s]+)\))/g;
+      let last = 0, m;
+      while ((m = re.exec(str))) {
+        if (m.index > last) frag.appendChild(document.createTextNode(str.slice(last, m.index)));
+        if (m[1]) frag.appendChild(h("strong", null, m[2]));
+        else {
+          const href = m[5];
+          if (/^#\//.test(href) || /^https?:\/\//.test(href)) frag.appendChild(h("a", { href, target: href.startsWith("#") ? null : "_blank", rel: "noopener noreferrer" }, m[4]));
+          else frag.appendChild(document.createTextNode(m[4]));
+        }
+        last = re.lastIndex;
+      }
+      if (last < str.length) frag.appendChild(document.createTextNode(str.slice(last)));
+      return frag;
+    };
+    for (const b of blocks) {
+      const lines = b.split("\n");
+      if (lines.every((l) => /^\s*([-*•]|\d+\.)\s+/.test(l))) {
+        const ordered = /^\s*\d+\./.test(lines[0]);
+        out.appendChild(h(ordered ? "ol" : "ul", null, lines.map((l) => h("li", null, inline(l.replace(/^\s*([-*•]|\d+\.)\s+/, ""))))));
+      } else {
+        const p = h("p");
+        lines.forEach((l, i) => { if (i) p.appendChild(h("br")); p.appendChild(inline(l.replace(/^#+\s*/, ""))); });
+        out.appendChild(p);
+      }
+    }
+    return out;
+  };
 
-function skeletons() {
-  $("#list-deals").replaceChildren(...Array.from({ length: 6 }, () => el("div", { class: "card skeleton" })));
-}
-
-async function main() {
-  skeletons();
-  setupTabs();
-  try {
-    const res = await fetch("data.json", { cache: "no-cache" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    state.data = await res.json();
-  } catch (err) {
-    $("#updated").textContent = "Sem dados";
-    $("#tiles").replaceChildren();
-    $("#hero-figure").textContent = "";
-    $("#list-deals").replaceChildren(el("div", { class: "empty" }, icon("warning-circle"),
-      el("h3", { text: "Não consegui carregar os dados" }),
-      el("p", { text: `O ficheiro data.json não respondeu (${err.message}). A recolha da noite pode ter falhado; os logs estão no job apscrap-daily do k3s.` })));
-    return;
-  }
-  renderMeta();
-  buildFilters();
-  render();
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => render());
-  let resize;
-  addEventListener("resize", () => { clearTimeout(resize); resize = setTimeout(() => { if (state.tab === "market") renderMarket(); }, 150); });
-}
-
-main();
+  /* A map with OpenStreetMap tiles. */
+  App.makeMap = (el, center = [38.76, -9.15], zoom = 11) => {
+    if (!window.L) { el.appendChild(h("p", { class: "muted small" }, "O mapa não carregou.")); return null; }
+    const map = L.map(el, { scrollWheelZoom: false }).setView(center, zoom);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18, attribution: "© OpenStreetMap" }).addTo(map);
+    return map;
+  };
+})();

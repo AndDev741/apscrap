@@ -39,6 +39,28 @@ TRANSACTIONS = {"rent": "arrendar", "sale": "comprar"}
 _TRANSACTION_OUT = {"RENT": "rent", "SELL": "sale"}
 PROPERTY_TYPES = {"flat": "apartamento", "house": "moradia"}
 
+MAX_IMAGES = 12
+
+# additionalInformation values ("extras_types::garage") onto the Portuguese
+# names the filters use. Anything else is dropped.
+_EXTRAS = {
+    "extras_types::garage": "Garagem", "extras_types::lift": "Elevador",
+    "extras_types::balcony": "Varanda", "extras_types::terrace": "Varanda",
+    "extras_types::air_conditioning": "Ar condicionado", "extras_types::garden": "Jardim",
+    "extras_types::pool": "Piscina", "extras_types::basement": "Arrecadação",
+    "extras_types::storage": "Arrecadação", "equipment_types::furniture": "Mobilado",
+}
+# Older stored detail pages kept only the description, so the same extras are
+# read from its text there. Rougher, and only used when the structured list is
+# missing.
+_EXTRAS_TEXT = [
+    ("Garagem", re.compile(r"\b(garagem|box|lugar de estacionamento|parqueamento)\b", re.I)),
+    ("Elevador", re.compile(r"\belevador", re.I)),
+    ("Varanda", re.compile(r"\b(varanda|terra[çc]o|marquise)", re.I)),
+    ("Ar condicionado", re.compile(r"\bar condicionado\b", re.I)),
+    ("Mobilado", re.compile(r"\b(mobilad[oa]|equipad[oa] e mobilad)", re.I)),
+]
+
 
 def _dig(obj: Any, *keys, default=None):
     for k in keys:
@@ -131,8 +153,14 @@ class Imovirtual:
         keep = (
             "id", "location", "characteristics", "features", "description",
             "createdAt", "modifiedAt", "market", "advertiserType", "agency",
+            "additionalInformation", "topInformation",
         )
-        return {k: ad.get(k) for k in keep if k in ad}
+        out = {k: ad.get(k) for k in keep if k in ad}
+        # A dozen medium-size photos for the gallery; the rest of each image
+        # record (thumbnails, large sizes) is never read.
+        out["images"] = [img.get("medium") for img in (ad.get("images") or [])
+                         if isinstance(img, dict) and img.get("medium")][:MAX_IMAGES]
+        return out
 
     # -- normalisation ---------------------------------------------------
 
@@ -221,7 +249,19 @@ class Imovirtual:
             except (KeyError, TypeError, ValueError):
                 return None
 
+        extras = []
+        for info in payload.get("additionalInformation") or []:
+            for value in (info or {}).get("values") or []:
+                name = _EXTRAS.get(value)
+                if name and name not in extras:
+                    extras.append(name)
+        if not payload.get("additionalInformation"):
+            text = payload.get("description") or ""
+            extras = [name for name, rx in _EXTRAS_TEXT if rx.search(text)]
+
         return {
+            "extras": extras,
+            "image_urls": payload["images"] if "images" in payload else None,
             "latitude": coords.get("latitude"),
             "longitude": coords.get("longitude"),
             "build_year": num("build_year", int),

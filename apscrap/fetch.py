@@ -84,6 +84,18 @@ def crawl_details(source_name: str, limit: int = 100) -> dict:
                     LIMIT %s""",
                 (source_name, limit),
             ).fetchall()
+            # What is left of the budget refreshes active rentals fetched before
+            # photos and extras were kept, newest first.
+            if len(rows) < limit:
+                rows += conn.execute(
+                    """SELECT id, url FROM listings
+                        WHERE source = %s AND detail_fetched_at IS NOT NULL
+                          AND image_urls IS NULL AND transaction_type = 'rent'
+                          AND last_seen_at > now() - interval '3 days'
+                        ORDER BY last_seen_at DESC, id DESC
+                        LIMIT %s""",
+                    (source_name, limit - len(rows)),
+                ).fetchall()
             log.info("%s listings need a detail fetch", len(rows))
 
             for row in rows:
@@ -94,7 +106,10 @@ def crawl_details(source_name: str, limit: int = 100) -> dict:
                 # Mark it done either way. A 404 means the advert is gone, and
                 # retrying it every night forever would be pointless traffic.
                 conn.execute(
-                    "UPDATE listings SET detail_fetched_at = now() WHERE id = %s", (row["id"],)
+                    """UPDATE listings SET detail_fetched_at = now(),
+                              image_urls = CASE WHEN %s THEN COALESCE(image_urls, '{}') ELSE image_urls END
+                        WHERE id = %s""",
+                    (payload is None, row["id"]),
                 )
                 conn.commit()
                 fetched += 1

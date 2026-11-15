@@ -78,6 +78,8 @@ UPDATE listings SET
     condition   = COALESCE(%(condition)s,   condition),
     deposit_eur = COALESCE(%(deposit_eur)s, deposit_eur),
     floor       = COALESCE(%(floor)s,       floor),
+    extras      = COALESCE(%(extras)s,      extras),
+    image_urls  = COALESCE(%(image_urls)s,  image_urls),
     -- so a replay into an empty table does not queue every detail page again
     detail_fetched_at = COALESCE(detail_fetched_at, %(fetched_at)s)
 WHERE source = %(source)s AND url = %(url)s

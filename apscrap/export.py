@@ -15,7 +15,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from .config import SITE_SRC
+from .config import SITE_LEGACY as SITE_SRC
 from .db import connect
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ SELECT id, url, title, thumbnail_url, property_type, typology,
        deal_score, peer_level, peer_n, peer_med_price,
        is_temporary, is_private_owner
 FROM v_deals
+WHERE transaction_type = 'rent'
 """
 
 # The site rebuilds these prefixes (app.js, listingUrl / thumbUrl). Together

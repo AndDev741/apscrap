@@ -78,6 +78,17 @@ adverts nearby, which are themselves asking prices. A whole parish can be
 overpriced and every listing in it can still look like a deal next to its
 neighbours.
 
+**Cars are a thin slice by design.** Standvirtual's terms forbid repeated,
+systematic extraction, so only the models you follow are fetched, when you ask,
+at most weekly, up to five pages each. Depreciation curves are cross-sectional
+(today's prices of cars of different ages) and need at least 8 adverts per
+model. Insurance and maintenance are estimates until you type in your own.
+
+**The assistant can only read, and can still be wrong.** Every number it gives
+should come from a tool call, and `scripts/agent_eval.py` checks a set of them
+against SQL. A model behind a gateway can still misread a question; the answer
+always names its source so you can check.
+
 ## Worth adding, roughly in order of value
 
 1. **Description parsing.** Condomínio, furnished, lease length and guarantor

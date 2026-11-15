@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>apScrap</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Cpath d='M8 16.5 16 10l8 6.5V24h-5.5v-4.5h-5V24H8z' fill='%23fcfcfb'/%3E%3C/svg%3E">
+<link rel="preload" href="vendor/geist/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="data.json" as="fetch" crossorigin>
+<link rel="stylesheet" href="vendor/phosphor/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <a class="wordmark" href="./" aria-label="apScrap, início">
+      <span class="mark" aria-hidden="true"><i class="ph ph-house-line"></i></span>
+      apScrap
+    </a>
+    <p class="updated" id="updated">A carregar os dados</p>
+  </header>
+
+  <section class="summary" aria-live="polite">
+    <div class="hero">
+      <p class="hero-figure" id="hero-figure">&nbsp;</p>
+      <p class="hero-caption" id="hero-caption">casas para arrendar batem com os teus filtros</p>
+    </div>
+    <dl class="tiles" id="tiles">
+      <div class="tile skeleton"></div>
+      <div class="tile skeleton"></div>
+      <div class="tile skeleton"></div>
+    </dl>
+  </section>
+
+  <div class="controls" id="controls">
+    <section class="filters" aria-label="Filtros">
+      <div class="field">
+        <span class="field-label">Concelho</span>
+        <div class="chips" id="f-council"></div>
+      </div>
+      <div class="field">
+        <span class="field-label">Tipologia</span>
+        <div class="chips" id="f-typology"></div>
+      </div>
+      <div class="field">
+        <span class="field-label">Tipo</span>
+        <div class="chips" id="f-type"></div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="f-price">Renda máxima</label>
+        <div class="input-euro"><span aria-hidden="true">€</span><input id="f-price" type="number" inputmode="numeric" min="0" step="50"></div>
+      </div>
+      <div class="field" id="field-commute">
+        <label class="field-label" for="f-commute" id="commute-label">Até ao trabalho</label>
+        <select id="f-commute">
+          <option value="">qualquer tempo</option>
+          <option value="25">até 25 min</option>
+          <option value="35">até 35 min</option>
+          <option value="45">até 45 min</option>
+          <option value="60">até 60 min</option>
+        </select>
+      </div>
+      <div class="field">
+        <span class="field-label">Temporários</span>
+        <label class="switch"><input type="checkbox" id="f-temp"><span>mostrar</span></label>
+      </div>
+    </section>
+
+    <nav class="tabs" role="tablist" aria-label="Vistas" id="tabs">
+      <button role="tab" id="t-deals" aria-controls="tab-deals" data-tab="deals" aria-selected="true">Negócios</button>
+      <button role="tab" id="t-negotiate" aria-controls="tab-negotiate" data-tab="negotiate" aria-selected="false" tabindex="-1">Negociar</button>
+      <button role="tab" id="t-new" aria-controls="tab-new" data-tab="new" aria-selected="false" tabindex="-1">Novos</button>
+      <button role="tab" id="t-map" aria-controls="tab-map" data-tab="map" aria-selected="false" tabindex="-1">Mapa</button>
+      <button role="tab" id="t-market" aria-controls="tab-market" data-tab="market" aria-selected="false" tabindex="-1">Mercado</button>
+    </nav>
+  </div>
+
+  <main>
+    <section id="tab-deals" class="panel" role="tabpanel" aria-labelledby="t-deals">
+      <p class="lede">Os mais baratos face aos vizinhos da mesma tipologia, no preço e no valor por m².</p>
+      <div class="grid" id="list-deals"></div>
+    </section>
+
+    <section id="tab-negotiate" class="panel" role="tabpanel" aria-labelledby="t-negotiate" hidden>
+      <p class="lede">Anunciados há mais de dois meses ou que já baixaram o preço. Aqui o senhorio costuma aceitar uma contraproposta.</p>
+      <div class="grid" id="list-negotiate"></div>
+    </section>
+
+    <section id="tab-new" class="panel" role="tabpanel" aria-labelledby="t-new" hidden>
+      <p class="lede">Publicados nos últimos três dias. Os bons preços costumam desaparecer nesta janela.</p>
+      <div class="grid" id="list-new"></div>
+    </section>
+
+    <section id="tab-map" class="panel" role="tabpanel" aria-labelledby="t-map" hidden>
+      <p class="lede" id="map-note"></p>
+      <div class="map-frame"><div id="map"></div></div>
+      <div class="legend" id="map-legend"></div>
+    </section>
+
+    <section id="tab-market" class="panel" role="tabpanel" aria-labelledby="t-market" hidden>
+      <article class="block">
+        <h2>Renda mediana por m²</h2>
+        <p class="block-sub" id="market-note">Apartamentos, todas as tipologias, por concelho e por dia.</p>
+        <div class="legend" id="market-legend"></div>
+        <div class="chart" id="market-chart"></div>
+        <details class="data-table">
+          <summary>Ver os valores em tabela</summary>
+          <div class="table-scroll"><table id="market-table"></table></div>
+        </details>
+      </article>
+      <article class="block">
+        <h2>Quanto custa cada freguesia</h2>
+        <p class="block-sub">Renda mediana dos apartamentos ativos. Valores com menos de 8 anúncios aparecem esbatidos porque dizem pouco.</p>
+        <div class="table-scroll"><table class="parishes" id="parish-table"></table></div>
+      </article>
+    </section>
+  </main>
+
+  <footer class="footer" id="footer"></footer>
+</div>
+
+<div class="tooltip" id="tooltip" role="status" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>

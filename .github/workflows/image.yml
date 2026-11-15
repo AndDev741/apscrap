@@ -21,7 +21,8 @@ jobs:
       - name: Syntax check
         run: |
           python3 -m compileall -q apscrap scripts
-          node --check site/app.js
+          node --check site_legacy/app.js
+          for f in site/*.js; do node --check "$f"; done
 
       - name: Build
         run: docker build -t "$IMAGE:${GITHUB_SHA::7}" -t "$IMAGE:latest" .
@@ -29,6 +30,7 @@ jobs:
       - name: Smoke test the image
         run: |
           docker run --rm "$IMAGE:latest" apscrap --help >/dev/null
+          docker run --rm "$IMAGE:latest" python -c "import apscrap.web, apscrap.agent, apscrap.carsapi"
           docker run --rm "$IMAGE:latest" wrangler --version
 
       - name: Log in to GHCR

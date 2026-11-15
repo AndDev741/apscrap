@@ -1,4 +1,5 @@
 import argparse
+import datetime
 import logging
 import sys
 
@@ -60,8 +61,26 @@ def main(argv=None) -> int:
 
     cl = sub.add_parser("commute-load", help="load a travel-time grid from scripts/commute_grid.py")
     cl.add_argument("csv")
+    cl.add_argument("--slot", choices=["a", "b"], default="a", help="whose workplace")
+    cl.add_argument("--mode", choices=["transit", "car"], help="default: the file's mode= field")
+    cl.add_argument("--lat", type=float, help="store the workplace point too (private DB only)")
+    cl.add_argument("--lon", type=float)
 
     sub.add_parser("stats", help="what is in the warehouse right now")
+
+    sv = sub.add_parser("serve", help="run the two-person web app")
+    sv.add_argument("--host", default="0.0.0.0")
+    sv.add_argument("--port", type=int, default=8080)
+
+    sub.add_parser("relist", help="match republished adverts (IM-3)")
+    sub.add_parser("aggregates", help="refresh market_agg_daily and the app's read models")
+    sub.add_parser("ine", help="import INE's parish medians")
+    sub.add_parser("reparse-details", help="re-read every stored detail page (extras, photos)")
+    sub.add_parser("fuel", help="fetch DGEG's average fuel prices into the settings")
+    n = sub.add_parser("notify", help="shortlist drops, saved searches and zone alerts")
+    n.add_argument("--dry-run", action="store_true")
+    dy = sub.add_parser("diary", help="write this week's market diary")
+    dy.add_argument("--force", action="store_true")
 
     args = ap.parse_args(argv)
     _log(args.verbose)
@@ -97,10 +116,41 @@ def main(argv=None) -> int:
         print(alert.run(dry_run=args.dry_run))
 
     elif args.cmd == "commute-load":
-        print(commute.load(args.csv))
+        print(commute.load(args.csv, args.slot, args.mode, args.lat, args.lon))
 
     elif args.cmd == "stats":
         _stats()
+
+    elif args.cmd == "serve":
+        from . import web
+        web.serve(args.host, args.port)
+
+    elif args.cmd == "relist":
+        from . import relist
+        print(relist.detect())
+
+    elif args.cmd == "aggregates":
+        from . import market
+        print(market.refresh_aggregates())
+        print(market.refresh_read_models())
+
+    elif args.cmd == "ine":
+        from . import appsettings, ine
+        print(ine.refresh(appsettings.get("property_criteria")["councils"]))
+
+    elif args.cmd == "reparse-details":
+        print(_reparse_details())
+
+    elif args.cmd == "fuel":
+        print(_fuel())
+
+    elif args.cmd == "notify":
+        from . import notify
+        print(notify.run(dry_run=args.dry_run))
+
+    elif args.cmd == "diary":
+        from . import notify
+        print(notify.write_diary(force=args.force))
 
     return 0
 
@@ -131,6 +181,21 @@ def _daily(args) -> int:
     step("parse details", parse.process_pending)
     step("prune", lambda: db.prune_raw_search(RAW_SEARCH_KEEP_DAYS))
 
+    # The app's read models. Each step stands alone: a failure here leaves the
+    # crawl and yesterday's numbers intact.
+    from . import appsettings, carcost, ine, market, notify, relist
+    step("relist", relist.detect)
+    step("aggregates", market.refresh_aggregates)
+    step("read models", market.refresh_read_models)
+    def _ine():
+        with db.connect() as conn:
+            if not ine.due(conn):
+                return "not due"
+        return ine.refresh(appsettings.get("property_criteria")["councils"])
+    step("ine", _ine)
+    step("fuel", _fuel)
+    step("carcost tables", carcost.check_tables)
+
     if export.configured():
         site = export.site_dir()
         step("export", lambda: export.build(site))
@@ -143,11 +208,30 @@ def _daily(args) -> int:
         step("alert", alert.run)
     else:
         logging.info("Telegram not configured, skipping the alert")
+    step("notify", notify.run)
+    if datetime.date.today().weekday() == 0:
+        step("diary", notify.write_diary)
 
     if failed:
         logging.error("finished with failed steps: %s", ", ".join(failed))
         return 1
     return 0
+
+
+def _reparse_details() -> dict:
+    """Clear parsed_at on every stored detail page and parse them again. Run
+    once after a parser change that reads new fields (extras, photos)."""
+    with db.connect() as conn:
+        n = conn.execute("UPDATE raw_pages SET parsed_at = NULL WHERE kind = 'detail'").rowcount
+        conn.commit()
+    return {"queued": n, **parse.process_pending()}
+
+
+def _fuel() -> dict:
+    from . import appsettings, carcost
+    prices = carcost.fetch_fuel_prices()
+    appsettings.put("fuel_prices", prices)
+    return prices
 
 
 def _stats() -> None:

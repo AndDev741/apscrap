@@ -1,13 +1,19 @@
 [project]
 name = "apscrap"
 version = "0.1.0"
-description = "Portuguese apartment listing scraper and price-history warehouse"
+description = "Price history for renting (and buying) in Lisbon, plus a two-person app to decide on a home and a car"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
     "psycopg[binary]>=3.1",
     "python-dotenv>=1.0",
     "tenacity>=8.2",
+    # the two-person app (apscrap serve)
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "pyjwt[crypto]>=2.9",
+    "pillow>=11",
+    "python-multipart>=0.0.18",
 ]
 
 [project.scripts]

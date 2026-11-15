@@ -28,6 +28,9 @@ USER_AGENT = os.getenv(
 
 SQL_DIR = Path(__file__).resolve().parent.parent / "sql"
 SITE_SRC = Path(__file__).resolve().parent.parent / "site"
+# The static site published to Cloudflare Pages, kept as a read-only fallback
+# while the app (site/ + apscrap serve) settles in.
+SITE_LEGACY = Path(__file__).resolve().parent.parent / "site_legacy"
 
 # Detail pages are the only source of coordinates. 150 a night is the steady
 # state; raise it for the first weeks so the backlog of rentals clears.

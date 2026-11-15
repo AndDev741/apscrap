@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16
+    image: postgres:17
     container_name: apscrap-db
     environment:
       POSTGRES_USER: ${PGUSER:-apscrap}
@@ -9,7 +9,7 @@ services:
     ports:
       - "${PGPORT:-5432}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata17:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-apscrap}"]
       interval: 5s
@@ -30,5 +30,5 @@ services:
       MB_DB_FILE: /metabase-data/metabase.db
 
 volumes:
-  pgdata:
+  pgdata17:
   mbdata:

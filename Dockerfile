@@ -18,6 +18,7 @@ COPY pyproject.toml README.md ./
 COPY apscrap ./apscrap
 COPY sql ./sql
 COPY site ./site
+COPY site_legacy ./site_legacy
 RUN pip install --no-cache-dir -e .
 
 # A crawl writes nothing to disk but the site it builds in /tmp, so it has no

@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
-"""Public-transit minutes from a grid over Greater Lisbon to one destination.
+"""Travel minutes from a grid over Greater Lisbon to one destination.
+
+Two modes. --mode transit (the default) is public transport plus walking, over
+the seven GTFS feeds below. --mode car is driving door to door over the OSM
+street network alone, so it needs no timetables.
 
 Run on a laptop, not on the server: Conveyal R5 (through r5py) needs several
-GB of memory to route over the metropolitan network. The result changes only
-when timetables do, so re-run it a few times a year and when you change jobs.
+GB of memory to route over the metropolitan network. The transit result
+changes only when timetables do, so re-run it a few times a year and when you
+change jobs. The car result changes only with the street map.
 
-    python3 -m venv /tmp/r5 && /tmp/r5/bin/pip install "r5py>=1.0" osmium
+    python3 -m venv /tmp/r5 && /tmp/r5/bin/pip install "r5py>=1.0" osmium geopandas
+
+r5py starts a JVM inside Python. OpenJDK 27 works and prints sun.misc.Unsafe
+deprecation warnings from protobuf, which are harmless; if a newer Java is
+refused, point JAVA_HOME at a JDK 21. By default the JVM may take 80% of RAM.
+Cap it with `max-memory: 8G` in ~/.config/r5py.yml if other programs need the
+rest: a transit grid peaked at 6.7 GB under that cap, a car grid at 4.7 GB.
 
     # 1. street network: Geofabrik Portugal, cut down to Greater Lisbon
     curl -LO https://download.geofabrik.de/europe/portugal-latest.osm.pbf
     /tmp/r5/bin/python scripts/commute_clip_osm.py portugal-latest.osm.pbf lisboa.osm.pbf
 
-    # 2. timetables, one file per operator, each with its own name: r5py caches
-    #    converted feeds by file name, so seven files called gtfs.zip collide
-    curl -L -o metro_lisboa.zip https://www.metrolisboa.pt/google_transit/googleTransit.zip
+    # 2. timetables (transit only), one file per operator, each with its own
+    #    name: r5py caches converted feeds by file name, so seven files called
+    #    gtfs.zip collide. Metro Lisboa answers 403 to curl's own User-Agent.
+    curl -L -A "Mozilla/5.0" -o metro_lisboa.zip https://www.metrolisboa.pt/google_transit/googleTransit.zip
     curl -L -o carris.zip https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS
     curl -L -o cm_raw.zip https://api.carrismetropolitana.pt/gtfs
     curl -L -o cp.zip https://publico.cp.pt/gtfs/gtfs.zip
@@ -27,18 +39,38 @@ when timetables do, so re-run it a few times a year and when you change jobs.
         --lat <work lat> --lon <work lon> --label <name shown on the site> \
         --osm lisboa.osm.pbf --gtfs metro_lisboa.zip carris.zip carris_metropolitana.zip \
             cp.zip fertagus.zip transtejo.zip mts.zip \
-        --out ~/apscrap.commute.csv
+        --departure 2026-11-17T08:00 --out ~/apscrap.commute.csv
     apscrap commute-load ~/apscrap.commute.csv        # or DEPLOY.md for the server
+
+    # the same destination by car (under a minute): no --gtfs, skip step 2
+    /tmp/r5/bin/python scripts/commute_grid.py --mode car \
+        --lat <work lat> --lon <work lon> --label <name shown on the site> \
+        --osm lisboa.osm.pbf --out ~/apscrap.car.commute.csv
+
+Car times use R5's free-flow speeds (OSM maxspeed tags, else a default per
+road class). R5 has no traffic model, so --departure changes nothing for a car
+and a rush-hour drive takes longer than the figure says. The departure still
+goes into the metadata line.
 
 Check that every operator runs on the --departure date. The Carris
 Metropolitana feed published 2026-10-28 has no calendar for area 2 (Loures,
 Odivelas, Vila Franca, Mafra) from 1 November, so a November date silently
-drops every bus there; 2026-10-29 was used for the first grid.
+drops every bus there; 2026-10-29 was used for the first grid. The feed
+published 2026-11-13 has weekday service in all four areas again.
 
 TML's all-operators feed (go.tmlmobilidade.pt/hub/api/v1/plans/gtfs) looks
 simpler but carries the same broken Carris Metropolitana trips, and mixing it
 with the per-operator feeds counts every trip twice. If a run fails on a feed
 error that is already fixed, clear ~/.cache/r5py.
+
+The output starts with one metadata line, then the header, then one row per
+reachable cell:
+
+    # label=<label>,mode=<transit|car>,step_lat=...,step_lon=...,departure=...
+    lat_idx,lon_idx,minutes
+
+The label may hold any letters but no comma, since commas separate the
+metadata fields.
 
 The output encodes where you work. Keep it out of git; .gitignore covers
 *.commute.csv and the default name.
@@ -61,15 +93,22 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lat", type=float, required=True)
     ap.add_argument("--lon", type=float, required=True)
-    ap.add_argument("--label", required=True)
+    ap.add_argument("--label", required=True, help="any letters, no comma")
+    ap.add_argument("--mode", choices=["transit", "car"], default="transit")
     ap.add_argument("--osm", required=True)
-    ap.add_argument("--gtfs", nargs="+", required=True)
+    ap.add_argument("--gtfs", nargs="+", default=[], help="timetables, needed for --mode transit")
     ap.add_argument("--out", required=True)
     ap.add_argument("--departure", default="2026-11-03T08:00",
                     help="a weekday morning inside every feed's service dates")
     ap.add_argument("--window-min", type=int, default=60,
-                    help="R5 reports the median over departures in this window")
+                    help="R5 reports the median over departures in this window (transit)")
     args = ap.parse_args()
+    if "," in args.label or "\n" in args.label:
+        ap.error("--label must not contain a comma or a newline")
+    if args.mode == "transit" and not args.gtfs:
+        ap.error("--mode transit needs --gtfs")
+    if args.mode == "car" and args.gtfs:
+        print("--mode car routes over the streets only, ignoring --gtfs", flush=True)
 
     south, west, north, east = BBOX
     step_lat = STEP_M / 111_320
@@ -88,26 +127,39 @@ def main() -> None:
     destination = gpd.GeoDataFrame({"id": ["work"]}, geometry=[Point(args.lon, args.lat)], crs="EPSG:4326")
     print(f"{len(origins)} grid points, {STEP_M} m apart", flush=True)
 
-    network = r5py.TransportNetwork(args.osm, args.gtfs)
     departure = dt.datetime.fromisoformat(args.departure)
+    if args.mode == "transit":
+        network = r5py.TransportNetwork(args.osm, args.gtfs)
+        modes = dict(
+            transport_modes=[r5py.TransportMode.TRANSIT, r5py.TransportMode.WALK],
+            departure_time_window=dt.timedelta(minutes=args.window_min),
+        )
+    else:
+        # Street network only. access_modes=CAR keeps r5py from adding its
+        # default WALK as a second direct mode.
+        network = r5py.TransportNetwork(args.osm)
+        modes = dict(
+            transport_modes=[r5py.TransportMode.CAR],
+            access_modes=[r5py.TransportMode.CAR],
+        )
     # Routed from work out to every cell, not from every cell to work: r5py
     # runs one search per origin, so the other way round is 25,000 searches
     # (hours) instead of one (minutes). Transit times averaged over an hour of
-    # departures are close to symmetric, which is good enough for a figure the
+    # departures are close to symmetric, and car times differ only where
+    # one-way streets force a detour, which is good enough for a figure the
     # site already labels as an estimate.
     ttm = r5py.TravelTimeMatrix(
         network,
         origins=destination,
         destinations=origins,
         departure=departure,
-        departure_time_window=dt.timedelta(minutes=args.window_min),
-        transport_modes=[r5py.TransportMode.TRANSIT, r5py.TransportMode.WALK],
         max_time=dt.timedelta(minutes=120),
+        **modes,
     )
 
     reached = ttm.dropna(subset=["travel_time"]).merge(origins[["id", "lat_idx", "lon_idx"]], left_on="to_id", right_on="id")
-    with open(args.out, "w") as f:
-        f.write(f"# label={args.label},step_lat={step_lat:.8f},step_lon={step_lon:.8f},"
+    with open(args.out, "w", encoding="utf-8") as f:
+        f.write(f"# label={args.label},mode={args.mode},step_lat={step_lat:.8f},step_lon={step_lon:.8f},"
                 f"departure={departure.isoformat()}\n")
         f.write("lat_idx,lon_idx,minutes\n")
         for r in reached.itertuples():

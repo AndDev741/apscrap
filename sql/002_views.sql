@@ -10,6 +10,25 @@ DROP VIEW IF EXISTS v_price_changes    CASCADE;
 DROP VIEW IF EXISTS v_listing_current  CASCADE;
 DROP VIEW IF EXISTS v_listing_history  CASCADE;
 DROP VIEW IF EXISTS v_area_centroid    CASCADE;
+DROP VIEW IF EXISTS v_listing_chain    CASCADE;
+DROP VIEW IF EXISTS v_zone_current     CASCADE;
+DROP VIEW IF EXISTS v_shortlist        CASCADE;
+
+
+-- Not a home: a room, a shop, a plot, a garage, a caravan, or a sale posted
+-- under rent. These sit at the very bottom of any €/m² ranking and would
+-- otherwise be the first "deals" on the page. Only the start of the title and
+-- a few unambiguous phrases count, because "moradia com garagem" and
+-- "apartamento com 3 quartos" are homes. A function so that the views and the
+-- nightly aggregates (market_agg_daily) judge titles the same way.
+CREATE OR REPLACE FUNCTION is_junk_title(title text) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $f$
+    SELECT COALESCE(
+        title ~* '^\W*((arrenda|aluga)[- ]?se|alugo|arrendo|arrenda|aluga|para (arrendar|alugar))?\s*(um\s+|uma\s+)?(quart[oa]s?|sala|loja|terreno|lote|armaz[eé]m|escrit[oó]rio|garagem|estacionamento|lugar de garagem|consult[oó]rio|roulot+e?|caravana)\M'
+        OR title ~* '(ponto comercial|trespasse|\mroulot|\mquart[oa]s? (para|em) (solteir|estudante|alugar|arrendar|rapariga|rapaz|senhora|menina)|^\W*vende-se)',
+        false)
+$f$;
+
 
 -- Where a listing is when its detail page has not been fetched yet: the mean
 -- position of the geocoded adverts in the same parish, else the same council.
@@ -52,6 +71,7 @@ SELECT
     l.area_sqm, l.floor, l.district, l.council, l.parish, l.neighborhood,
     l.latitude, l.longitude, l.build_year, l.energy_cert, l.condition,
     l.deposit_eur, l.is_private_owner, l.agency_name, l.thumbnail_url,
+    l.extras, l.image_urls, l.relist_of,
     s.price_eur, s.price_per_sqm, s.title,
     l.listed_at, l.first_seen_at, l.last_seen_at,
     s.observed_at                                   AS price_observed_at,
@@ -72,15 +92,8 @@ SELECT
                 ELSE true
             END
     )                                                AS is_plausible,
-    -- Not a home: a room, a shop, a plot, a garage, a caravan, or a sale posted
-    -- under rent. These sit at the very bottom of any €/m² ranking and would
-    -- otherwise be the first "deals" on the page. Only the start of the title
-    -- and a few unambiguous phrases count, because "moradia com garagem" and
-    -- "apartamento com 3 quartos" are homes.
-    (
-        s.title ~* '^\W*((arrenda|aluga)[- ]?se|alugo|arrendo|arrenda|aluga|para (arrendar|alugar))?\s*(um\s+|uma\s+)?(quart[oa]s?|sala|loja|terreno|lote|armaz[eé]m|escrit[oó]rio|garagem|estacionamento|lugar de garagem|consult[oó]rio|roulot+e?|caravana)\M'
-        OR s.title ~* '(ponto comercial|trespasse|\mroulot|\mquart[oa]s? (para|em) (solteir|estudante|alugar|arrendar|rapariga|rapaz|senhora|menina)|^\W*vende-se)'
-    )                                                AS is_junk,
+    -- Not a home: see is_junk_title above.
+    is_junk_title(s.title)                           AS is_junk,
     -- Student lets and short stays. Shown with a badge, not hidden: some are
     -- fine for a year, but the price is not comparable with a normal lease.
     s.title ~* '(estudante|temporad|f[ée]rias|curta dura|ano letivo|(setembro|outubro) a (junho|julho)|at[ée] (junho|julho|agosto)|\msemanal|por semana)'
@@ -92,7 +105,11 @@ SELECT
          WHEN cc.lat IS NOT NULL THEN 'council'
     END                                              AS geo_precision,
     cm.minutes                                       AS commute_min,
-    h.first_price, h.max_price, h.n_drops, h.n_rises, h.last_drop_on, h.price_path
+    h.first_price, h.max_price, h.n_drops, h.n_rises, h.last_drop_on, h.price_path,
+    COALESCE(l.relist_root, l.id)                    AS root_id,
+    COALESCE(l.relist_count, 0)                      AS n_relists,
+    EXTRACT(day FROM now() - COALESCE(l.chain_first_seen, l.listed_at, l.first_seen_at))::int
+                                                     AS chain_days_on_market
 FROM listings l
 JOIN LATERAL (
     SELECT price_eur, price_per_sqm, title, observed_at
@@ -104,40 +121,41 @@ JOIN LATERAL (
 LEFT JOIN v_area_centroid cp ON cp.council = l.council AND cp.parish = l.parish AND cp.council_level = 0
 LEFT JOIN v_area_centroid cc ON cc.council = l.council AND cc.council_level = 1
 LEFT JOIN v_listing_history h ON h.listing_id = l.id
-LEFT JOIN commute_meta m ON true
+LEFT JOIN commute_destinations m ON m.id = 1
 -- Commute from exact coordinates or the parish centre, never the council
 -- centre: Lisboa alone spans 15 to 60 minutes, so one figure for all of it
 -- would be noise dressed as data.
 LEFT JOIN commute_cells cm
-       ON cm.lat_idx = round(COALESCE(l.latitude,  cp.lat) / m.step_lat)::int
+       ON cm.dest_id = 1
+      AND cm.lat_idx = round(COALESCE(l.latitude,  cp.lat) / m.step_lat)::int
       AND cm.lon_idx = round(COALESCE(l.longitude, cp.lon) / m.step_lon)::int;
 
--- How a rental compares with its neighbours. The peer group is the narrowest
+-- How an advert compares with its neighbours (rent and sale, never mixed). The peer group is the narrowest
 -- one with at least 8 listings: same parish, type and typology; else same
 -- council, type and typology; else same council and type. Thin cells are noise
 -- (LIMITATIONS.md), so a parish with three T2s never sets the bar.
 CREATE VIEW v_deals AS
 WITH base AS (
     SELECT * FROM v_listing_current
-    WHERE transaction_type = 'rent' AND is_active AND is_plausible AND NOT is_junk
+    WHERE transaction_type IN ('rent', 'sale') AND is_active AND is_plausible AND NOT is_junk
 ),
 by_parish AS (
-    SELECT council, parish, property_type, typology, count(*) AS n,
+    SELECT transaction_type, council, parish, property_type, typology, count(*) AS n,
+           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS med_ppm,
+           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur)     AS med_price
+    FROM base GROUP BY 1, 2, 3, 4, 5
+),
+by_council AS (
+    SELECT transaction_type, council, property_type, typology, count(*) AS n,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS med_ppm,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur)     AS med_price
     FROM base GROUP BY 1, 2, 3, 4
 ),
-by_council AS (
-    SELECT council, property_type, typology, count(*) AS n,
+by_council_any AS (
+    SELECT transaction_type, council, property_type, count(*) AS n,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS med_ppm,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur)     AS med_price
     FROM base GROUP BY 1, 2, 3
-),
-by_council_any AS (
-    SELECT council, property_type, count(*) AS n,
-           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS med_ppm,
-           PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur)     AS med_price
-    FROM base GROUP BY 1, 2
 ),
 peer AS (
     SELECT b.id,
@@ -150,12 +168,12 @@ peer AS (
            CASE WHEN p.n >= 8 THEN p.med_price WHEN c.n >= 8 THEN c.med_price
                 WHEN a.n >= 8 THEN a.med_price END                        AS peer_med_price
     FROM base b
-    LEFT JOIN by_parish p      ON (p.council, p.parish, p.property_type, p.typology)
-                                IS NOT DISTINCT FROM (b.council, b.parish, b.property_type, b.typology)
-    LEFT JOIN by_council c     ON (c.council, c.property_type, c.typology)
-                                IS NOT DISTINCT FROM (b.council, b.property_type, b.typology)
-    LEFT JOIN by_council_any a ON (a.council, a.property_type)
-                                IS NOT DISTINCT FROM (b.council, b.property_type)
+    LEFT JOIN by_parish p      ON (p.transaction_type, p.council, p.parish, p.property_type, p.typology)
+                                IS NOT DISTINCT FROM (b.transaction_type, b.council, b.parish, b.property_type, b.typology)
+    LEFT JOIN by_council c     ON (c.transaction_type, c.council, c.property_type, c.typology)
+                                IS NOT DISTINCT FROM (b.transaction_type, b.council, b.property_type, b.typology)
+    LEFT JOIN by_council_any a ON (a.transaction_type, a.council, a.property_type)
+                                IS NOT DISTINCT FROM (b.transaction_type, b.council, b.property_type)
 )
 SELECT b.*, p.peer_level, p.peer_n,
        ROUND(p.peer_med_ppm::numeric, 2)                                   AS peer_med_ppm,

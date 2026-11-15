@@ -11,7 +11,9 @@ configured in this repository except the image.
 | Database | `apscrap` in the shared CloudNativePG cluster (be-infra `data/postgres.yaml`) |
 | Backup | be-infra `apps/apscrap/backup.yaml`, 06:10, restic, 7 daily / 4 weekly / 12 monthly |
 | Secrets | be-infra `apps/apscrap/secrets/*.sops.yaml`, encrypted with the cluster's age key |
-| Site | Cloudflare Pages project `apscrap`, behind Cloudflare Access |
+| App | be-infra `apps/apscrap/web.yaml`: Deployment `apscrap-web` (`apscrap serve`), Ingress `casa.beyouweb.com`, behind Cloudflare Access |
+| Old site | Cloudflare Pages project `apscrap`, behind Cloudflare Access, read-only fallback |
+| Assistant | OmniRoute, the same combo beyou uses (`apscrap-llm` secret); SQL as role `apscrap_readonly` (CNPG, `data/postgres.yaml`) |
 | Failure alert | Grafana's "Pod stuck" rule emails when the Job's pod stays Failed for 10 minutes |
 
 ## Shipping a change
@@ -20,6 +22,44 @@ Push to `main`. CI builds and pushes `latest`; Flux image automation commits the
 new digest into be-infra within about five minutes; the next night's Job runs
 it. The Job runs `apscrap migrate` before anything else, so schema and view
 changes apply themselves.
+
+## The app
+
+`apscrap-web` runs `apscrap migrate` and then `apscrap serve` on port 8080. It
+reaches the outside world only through Traefik and the Cloudflare Tunnel, and
+it trusts nobody it cannot identify: every API call checks Cloudflare Access's
+JWT (`CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` in the optional `apscrap-access`
+secret) and answers 503 until that secret exists. Health checks
+(`/api/health`) answer without it.
+
+Putting it on the internet takes three things in Cloudflare, once:
+
+1. A public hostname on the tunnel: `casa.beyouweb.com` to Traefik, the same
+   service as the other apps.
+2. An Access application on that hostname with a policy listing both emails
+   (Access then shows its own email login). Copy its audience tag.
+3. The secret, in be-infra:
+
+   ```bash
+   cat > apps/apscrap/secrets/apscrap-access.sops.yaml <<YAML
+   apiVersion: v1
+   kind: Secret
+   metadata: {name: apscrap-access, namespace: apscrap}
+   type: Opaque
+   stringData:
+     CF_ACCESS_TEAM_DOMAIN: <team>.cloudflareaccess.com
+     CF_ACCESS_AUD: <audience tag>
+   YAML
+   sops -e -i apps/apscrap/secrets/apscrap-access.sops.yaml
+   # add it to apps/apscrap/kustomization.yaml, commit, push
+   ```
+
+The first email to sign in takes person A, the second person B. Names, the
+second email, workplaces and every search criterion live in the app's
+Definições page, in the database.
+
+Everything the two of them create (votes, notes, photos, saved searches) is in
+the `apscrap` database, so the nightly backup already covers it.
 
 ## Operating it
 
@@ -39,7 +79,19 @@ kubectl -n data exec -it pg-1 -c postgres -- psql -d apscrap -c "SELECT count(*)
 
 ## Loading the commute grid
 
-The grid file reveals where you work, so it never goes through git:
+The grid file reveals where someone works, so it never goes through git. The
+simplest way in is a tunnel to the database and `apscrap commute-load`:
+
+```bash
+# terminal 1: forward the cluster's Postgres to the laptop
+ssh -L 15432:localhost:15432 andre@beyou-server \
+    kubectl -n data port-forward svc/pg-rw 15432:5432
+# terminal 2: load one grid per person and mode
+PGHOST=localhost PGPORT=15432 PGUSER=apscrap PGPASSWORD=... \
+    .venv/bin/apscrap commute-load ~/apscrap-commute/b.transit.commute.csv --slot b
+```
+
+The single-grid recipe below still works for person A's transit grid:
 
 ```bash
 # on the laptop, after scripts/commute_grid.py
