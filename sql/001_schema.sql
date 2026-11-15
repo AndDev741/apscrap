@@ -399,6 +399,11 @@ BEGIN
     END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS listings_live_idx ON listings (source) WHERE gone_at IS NULL;
+-- Fresh statistics before 002 and 004 plan the views over these columns. A
+-- column added in this same transaction has none, the planner then takes
+-- "gone_at IS NULL" for a handful of rows, and building mv_deals ran for
+-- hours on 2026-11-15. Sampling 30,000 rows of listings costs a second.
+ANALYZE listings;
 CREATE INDEX IF NOT EXISTS listings_gone_idx ON listings (gone_at DESC) WHERE gone_at IS NOT NULL;
 
 -- The portal marks it reserved but still shows it (ERA "Reservado", KW).
