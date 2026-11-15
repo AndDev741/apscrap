@@ -29,6 +29,7 @@ BASE = "https://casa.sapo.pt"
 PAGE_SIZE = 25
 MAX_PAGES = 120
 VISIT_HOURS_UTC = (23, 11)     # robots.txt: Visit-time: 2300-1100
+MIN_HOURS_BETWEEN = 20
 
 _CARD = re.compile(r'<div id="property_([0-9a-f-]{36})" class="property(?: [^"]*)?">')
 # Promoted cards link through an ad counter with the real address in l=.
@@ -98,6 +99,15 @@ class CasaSapo(Source):
             # Not a failure: tonight's scheduled run is inside the window. With
             # no fresh observation, lifecycle.py leaves these adverts alone.
             log.info("casasapo: outside the 23:00-11:00 UTC visit window robots.txt asks for; skipping")
+            return
+        # Once a night is enough: a job started by hand earlier in the night
+        # means the scheduled one leaves Casa Sapo alone.
+        recent = ctx.conn.execute(
+            """SELECT max(started_at) AS t FROM crawl_runs
+                WHERE source = 'casasapo' AND status = 'ok' AND pages_fetched > 0
+                  AND started_at > now() - make_interval(hours => %s)""", (MIN_HOURS_BETWEEN,)).fetchone()["t"]
+        if recent and not force:
+            log.info("casasapo: crawled at %s, less than %s h ago; skipping", recent, MIN_HOURS_BETWEEN)
             return
         f = ctx.fetcher
         for council in ctx.councils:
