@@ -445,7 +445,7 @@ done in production, and what still waits on someone:
 |---|---|
 | CA-0 | Done. Imovirtual: personal use allowed, sharing aggregated data with third parties forbidden (§2.7, 19 Aug 2026); the app is private to two people. Standvirtual: repeated, systematic extraction forbidden (4 May 2026) and database rights claimed, so cars are fetched on demand only. Recorded in the README's Sources table |
 | DT-1, DT-2 | Done. INE sales (0012234) and new leases (0014696) by parish, imported weekly; `market_agg_daily` backfilled from every snapshot and refreshed nightly |
-| DT-3, AC-1, AC-2, ST-1 | Done. `apscrap serve` in be-infra `apps/apscrap/web.yaml`. Opening it on `casa.beyouweb.com` waits on the Cloudflare tunnel hostname, the Access application and the `apscrap-access` secret (DEPLOY.md, "The app"); the second email is added in Definições when it is known |
+| DT-3, AC-1, AC-2, ST-1 | Done. `apscrap serve` in be-infra `apps/apscrap/web.yaml`, on apscrap.beyouweb.com in place of the old static site (which stays on apscrap.pages.dev). Access policy "Casa & Carro"; the second email joins it, and Definições, when it is known |
 | IM-1 | Done as a cartogram. 3- and 6-month changes appear once our own history covers them; until then the 12-month change is INE's and says so |
 | IM-2 | Done for rent and sale (`v_deals` now covers both) |
 | IM-3 | Done. `relist.py` matches reposted adverts; cards and detail show the chain and the days on market across it |

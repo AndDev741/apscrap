@@ -63,13 +63,13 @@ imovirtual.com
                        v                           v
                  export.py                    alert.py, notify.py
       site_legacy/ + data.json           Telegram messages
-       -> Cloudflare Pages (old)
+   -> apscrap.pages.dev (old site)
                                      |
             relist.py, market.py (aggregates, mv_deals), ine.py
                                      |
                                      v
                        apscrap serve (web.py): site/ + /api
-                       casa.beyouweb.com behind Cloudflare Access
+                       apscrap.beyouweb.com behind Cloudflare Access
 ```
 
 The database is the `apscrap` database in the shared CloudNativePG cluster on

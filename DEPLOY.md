@@ -11,8 +11,8 @@ configured in this repository except the image.
 | Database | `apscrap` in the shared CloudNativePG cluster (be-infra `data/postgres.yaml`) |
 | Backup | be-infra `apps/apscrap/backup.yaml`, 06:10, restic, 7 daily / 4 weekly / 12 monthly |
 | Secrets | be-infra `apps/apscrap/secrets/*.sops.yaml`, encrypted with the cluster's age key |
-| App | be-infra `apps/apscrap/web.yaml`: Deployment `apscrap-web` (`apscrap serve`), Ingress `casa.beyouweb.com`, behind Cloudflare Access |
-| Old site | Cloudflare Pages project `apscrap`, behind Cloudflare Access, read-only fallback |
+| App | be-infra `apps/apscrap/web.yaml`: Deployment `apscrap-web` (`apscrap serve`), Ingress `apscrap.beyouweb.com`, behind Cloudflare Access |
+| Old site | Cloudflare Pages project `apscrap`, now only on apscrap.pages.dev, behind the same Access application, read-only fallback |
 | Assistant | OmniRoute, the same combo beyou uses (`apscrap-llm` secret); SQL as role `apscrap_readonly` (CNPG, `data/postgres.yaml`) |
 | Failure alert | Grafana's "Pod stuck" rule emails when the Job's pod stays Failed for 10 minutes |
 
@@ -34,10 +34,13 @@ secret) and answers 503 until that secret exists. Health checks
 
 Putting it on the internet takes three things in Cloudflare, once:
 
-1. A public hostname on the tunnel: `casa.beyouweb.com` to Traefik, the same
-   service as the other apps.
-2. An Access application on that hostname with a policy listing both emails
-   (Access then shows its own email login). Copy its audience tag.
+1. A public hostname on the tunnel: `apscrap.beyouweb.com` to Traefik, the
+   same service as the other apps, and the DNS CNAME pointing at the tunnel
+   (it used to point at Cloudflare Pages).
+2. The Access application on that hostname ("Casa & Carro (apScrap)", which
+   also covers apscrap.pages.dev) with the reusable policy "Casa & Carro"
+   listing both emails, plus a bypass for `/api/health` so checks need no
+   login. Copy its audience tag.
 3. The secret, in be-infra:
 
    ```bash
