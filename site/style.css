@@ -327,3 +327,7 @@ table.compare td.best { background: var(--teal-soft); color: var(--teal-dark); f
 
 /* action buttons in page headers keep their own width */
 .page-head .row > * { flex: 0 0 auto; }
+.filter-box > summary::-webkit-details-marker { display: none; }
+.filter-box:not([open]) > summary h2::after { content: " ▾"; font-size: 16px; color: var(--ink-2); }
+.filter-box[open] > * + * { margin-top: 0; }
+.filter-box:not([open]) { padding-top: 12px; padding-bottom: 12px; }

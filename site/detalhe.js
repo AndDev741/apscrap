@@ -11,6 +11,8 @@
       ["historico", "Histórico de revisões"], ["test_drive", "Test drive"]],
   };
   const RATING = [["", "–"], ["bom", "Bom"], ["ok", "Aceitável"], ["mau", "Mau"]];
+  const FUEL_PT = { gasolina: "Gasolina", gasoleo: "Gasóleo", hibrido: "Híbrido", hibrido_plugin: "Híbrido plug-in", eletrico: "Elétrico", gpl: "GPL" };
+  const BODY_PT = { citadino: "Citadino", utilitario: "Utilitário", carrinha: "Carrinha", suv: "SUV", monovolume: "Monovolume", sedan: "Sedan", coupe: "Coupé", cabrio: "Cabrio", outro: "Outro" };
 
   function notesSection(kind, itemId, notes) {
     const wrap = h("section", { class: "card", "aria-label": "Notas de visita" });
@@ -148,8 +150,8 @@
               c.rating ? h("span", { class: "pill " + (c.rating === "bom" ? "good" : c.rating === "acima" ? "bad" : "neutral") }, c.rating === "bom" ? "Bom negócio" : c.rating === "acima" ? "Acima" : "Preço justo") : null),
             h("p", { style: { margin: 0, fontWeight: 500 } }, c.peer_med_price ? nf(Math.abs(c.discount_pct)) + "% " + (c.discount_pct >= 0 ? "abaixo" : "acima") + " de " + (c.model_label || "") + " semelhantes (" +
               (c.peer_level === "modelo_ano_km" ? "ano ±1, km ±20 000" : "ano ±2") + ", n=" + c.peer_n + "): " + App.eur(c.peer_med_price) : "Sem carros semelhantes suficientes para comparar (precisa de 8)."),
-            h("div", { class: "facts" }, fact("Ano", c.year), fact("Km", c.km !== null ? nf(c.km) : null), fact("Combustível", c.fuel), fact("Caixa", c.gearbox),
-              fact("Tipo", c.body_type), fact("Motor", c.engine_cc ? nf(c.engine_cc) + " cm³" : null), fact("Potência", c.power_hp ? c.power_hp + " cv" : null),
+            h("div", { class: "facts" }, fact("Ano", c.year), fact("Km", c.km !== null ? nf(c.km) : null), fact("Combustível", FUEL_PT[c.fuel] || c.fuel), fact("Caixa", c.gearbox === "automatica" ? "Automática" : c.gearbox === "manual" ? "Manual" : c.gearbox),
+              fact("Tipo", BODY_PT[c.body_type] || c.body_type), fact("Motor", c.engine_cc ? nf(c.engine_cc) + " cm³" : null), fact("Potência", c.power_hp ? c.power_hp + " cv" : null),
               fact("CO₂", c.co2_gkm ? c.co2_gkm + " g/km" : null), fact("Lugares", c.seats), fact("Vendedor", c.is_private_seller ? "Particular" : "Stand"))),
           notesSection("car", c.id, c.notes || [])),
         h("aside", { class: "side", style: { display: "flex", flexDirection: "column", gap: "16px" } },

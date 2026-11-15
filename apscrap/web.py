@@ -35,6 +35,17 @@ def _json(obj):
     return JSONResponse(jsonable_encoder(obj, custom_encoder={Decimal: float}))
 
 
+@app.middleware("http")
+async def _revalidate_static(request: Request, call_next):
+    """The site has no build step and no hashed file names, so the browser
+    must check with the server (ETag) before reusing a cached script, or a
+    deploy would leave it running yesterday's JavaScript."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.exception_handler(json.JSONDecodeError)
 def _bad_json(_request, exc):
     return JSONResponse({"error": f"invalid JSON: {exc}"}, status_code=400)

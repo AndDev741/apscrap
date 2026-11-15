@@ -242,9 +242,10 @@
       } }, "Guardar pesquisa como alerta") : null;
 
       add(root, h("div", { class: "with-filters" },
-        h("aside", { class: "filters", "aria-label": "Filtros" }, h("div", { class: "card tight" },
-          h("div", { class: "card-head", style: { alignItems: "center" } }, h("h2", { style: { fontSize: "22px" } }, "Filtros"),
-            h("button", { type: "button", class: "btn link", onclick: () => { App.setQuery({ cat: f.cat }); App.render(); } }, "Limpar")),
+        // On a phone the filters start folded, so results come first.
+        h("aside", { class: "filters", "aria-label": "Filtros" }, h("details", { class: "card tight filter-box", open: window.innerWidth > 760 },
+          h("summary", { class: "card-head", style: { alignItems: "center", cursor: "pointer", listStyle: "none" } }, h("h2", { style: { fontSize: "22px" } }, "Filtros"),
+            h("button", { type: "button", class: "btn link", onclick: (e) => { e.preventDefault(); App.setQuery({ cat: f.cat }); App.render(); } }, "Limpar")),
           isIm ? propertyFilters(f, data.facets) : carFilters(f, carData.models),
           saveSearch)),
         results));
