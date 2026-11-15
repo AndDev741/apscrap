@@ -85,7 +85,7 @@ def cases() -> list[dict]:
                            AND typology = 'T2'"""), "tol": 0},
         {"q": "Quantos dias fica em mediana um anúncio de arrendamento no mercado na Estrela?",
          "expect": zones.get("Estrela", {}).get("median_days"), "tol": 0.05},
-        {"q": "Quantos anúncios novos de arrendamento apareceram nos últimos 7 dias em Lisboa?",
+        {"q": "Quantos anúncios de arrendamento ativos em Lisboa foram vistos pela primeira vez nas últimas 168 horas?",
          "expect": one("""SELECT count(*) FROM mv_deals WHERE transaction_type = 'rent' AND council = 'Lisboa'
                            AND first_seen_at > now() - interval '7 days'"""), "tol": 0.03},
         {"q": "Qual foi a variação a 12 meses das rendas em Alvalade?", "expect": abs(zones["Alvalade"]["change_12m"] or 0), "tol": 0.05},
