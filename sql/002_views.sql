@@ -42,25 +42,32 @@ WHERE latitude IS NOT NULL
 GROUP BY GROUPING SETS ((council, parish), (council))
 HAVING count(*) >= 3;
 
--- Price path of every listing, from its snapshots.
+-- Price path of every listing, from its snapshots. Only plausible prices,
+-- and only changes that pass is_price_move(): a €5 nudge or a placeholder
+-- price is neither a drop nor a point on the sparkline.
 CREATE VIEW v_listing_history AS
 WITH ordered AS (
-    SELECT listing_id, observed_date, price_eur,
-           LAG(price_eur) OVER (PARTITION BY listing_id ORDER BY observed_at) AS prev
-    FROM listing_snapshots
-    WHERE price_eur IS NOT NULL
+    SELECT s.listing_id, s.observed_date, s.price_eur, l.transaction_type,
+           LAG(s.price_eur) OVER (PARTITION BY s.listing_id ORDER BY s.observed_at) AS prev
+    FROM listing_snapshots s
+    JOIN listings l ON l.id = s.listing_id
+    WHERE is_plausible_price(l.transaction_type, s.price_eur)
+),
+marked AS (
+    SELECT *, COALESCE(is_price_move(transaction_type, prev, price_eur), false) AS moved
+    FROM ordered
 )
 SELECT
     listing_id,
     (array_agg(price_eur ORDER BY observed_date))[1]                    AS first_price,
     max(price_eur)                                                      AS max_price,
-    count(*) FILTER (WHERE prev IS NOT NULL AND price_eur < prev)       AS n_drops,
-    count(*) FILTER (WHERE prev IS NOT NULL AND price_eur > prev)       AS n_rises,
-    max(observed_date) FILTER (WHERE prev IS NOT NULL AND price_eur < prev) AS last_drop_on,
-    -- [[date, price], ...] at every change, for the sparkline on the page
+    count(*) FILTER (WHERE moved AND price_eur < prev)                  AS n_drops,
+    count(*) FILTER (WHERE moved AND price_eur > prev)                  AS n_rises,
+    max(observed_date) FILTER (WHERE moved AND price_eur < prev)        AS last_drop_on,
+    -- [[date, price], ...] at every move, for the sparkline on the page
     jsonb_agg(jsonb_build_array(observed_date, price_eur) ORDER BY observed_date)
-        FILTER (WHERE prev IS NULL OR price_eur IS DISTINCT FROM prev)  AS price_path
-FROM ordered
+        FILTER (WHERE prev IS NULL OR moved)                            AS price_path
+FROM marked
 GROUP BY listing_id;
 
 -- Current state of every listing: newest snapshot joined onto its attributes.
@@ -75,20 +82,23 @@ SELECT
     s.price_eur, s.price_per_sqm, s.title,
     l.listed_at, l.first_seen_at, l.last_seen_at,
     s.observed_at                                   AS price_observed_at,
-    (l.last_seen_at > now() - interval '3 days')     AS is_active,
-    EXTRACT(day FROM now() - COALESCE(l.listed_at, l.first_seen_at))::int
-                                                     AS days_on_market,
+    -- apscrap/lifecycle.py decides, per portal, when a missing advert is gone.
+    (l.gone_at IS NULL)                              AS is_active,
+    -- Unknown when the portal gives no publish date and the advert was
+    -- already there on our first crawl of that portal (see is_backlog).
+    CASE WHEN l.listed_at IS NULL AND l.first_seen_at < src.started + interval '36 hours' THEN NULL
+         ELSE EXTRACT(day FROM now() - COALESCE(l.listed_at, l.first_seen_at))::int
+    END                                              AS days_on_market,
     -- Advertisers fat-finger things: a sale price posted under rent, an area
     -- with three extra zeros. Medians survive that, counts and averages do not,
     -- so every aggregate below filters on this.
     (
         s.price_eur IS NOT NULL
         AND l.area_sqm BETWEEN 10 AND 3000
+        AND is_plausible_price(l.transaction_type, s.price_eur)
         AND CASE l.transaction_type
-                WHEN 'rent' THEN s.price_eur BETWEEN 200 AND 20000
-                                 AND s.price_per_sqm BETWEEN 2 AND 100
-                WHEN 'sale' THEN s.price_eur BETWEEN 20000 AND 30000000
-                                 AND s.price_per_sqm BETWEEN 300 AND 30000
+                WHEN 'rent' THEN s.price_per_sqm BETWEEN 2 AND 100
+                WHEN 'sale' THEN s.price_per_sqm BETWEEN 300 AND 30000
                 ELSE true
             END
     )                                                AS is_plausible,
@@ -108,8 +118,23 @@ SELECT
     h.first_price, h.max_price, h.n_drops, h.n_rises, h.last_drop_on, h.price_path,
     COALESCE(l.relist_root, l.id)                    AS root_id,
     COALESCE(l.relist_count, 0)                      AS n_relists,
-    EXTRACT(day FROM now() - COALESCE(l.chain_first_seen, l.listed_at, l.first_seen_at))::int
-                                                     AS chain_days_on_market
+    CASE WHEN l.chain_first_seen IS NULL AND l.listed_at IS NULL
+              AND l.first_seen_at < src.started + interval '36 hours' THEN NULL
+         ELSE EXTRACT(day FROM now() - COALESCE(l.chain_first_seen, l.listed_at, l.first_seen_at))::int
+    END                                              AS chain_days_on_market,
+    -- Already online on the first night we crawled its portal: not "new",
+    -- whatever first_seen_at says. Keeps a portal's first crawl out of the
+    -- "new this week" counts and the saved-search alerts.
+    (l.first_seen_at < src.started + interval '36 hours') AS is_backlog,
+    -- Let by the month through a platform: see is_midstay() in 001.
+    (l.transaction_type = 'rent' AND is_midstay(l.agency_name, s.title)) AS is_midstay,
+    l.gone_at, l.gone_reason, l.is_reserved, l.dup_of, l.description,
+    -- Days from first seen (first copy of a relisted flat) to gone.
+    CASE WHEN l.gone_at IS NOT NULL
+              AND NOT (l.chain_first_seen IS NULL AND l.listed_at IS NULL
+                       AND l.first_seen_at < src.started + interval '36 hours') THEN
+        EXTRACT(day FROM l.gone_at - COALESCE(l.chain_first_seen, l.listed_at, l.first_seen_at))::int
+    END                                              AS days_to_gone
 FROM listings l
 JOIN LATERAL (
     SELECT price_eur, price_per_sqm, title, observed_at
@@ -121,6 +146,8 @@ JOIN LATERAL (
 LEFT JOIN v_area_centroid cp ON cp.council = l.council AND cp.parish = l.parish AND cp.council_level = 0
 LEFT JOIN v_area_centroid cc ON cc.council = l.council AND cc.council_level = 1
 LEFT JOIN v_listing_history h ON h.listing_id = l.id
+LEFT JOIN (SELECT source, min(first_seen_at) AS started FROM listings GROUP BY source) src
+       ON src.source = l.source
 LEFT JOIN commute_destinations m ON m.id = 1
 -- Commute from exact coordinates or the parish centre, never the council
 -- centre: Lisboa alone spans 15 to 60 minutes, so one figure for all of it
@@ -136,26 +163,51 @@ LEFT JOIN commute_cells cm
 -- (LIMITATIONS.md), so a parish with three T2s never sets the bar.
 CREATE VIEW v_deals AS
 WITH base AS (
+    -- One row per flat: a copy on a second portal (dup_of) is shown through
+    -- the copy it points at, and never counted twice in a median.
     SELECT * FROM v_listing_current
     WHERE transaction_type IN ('rent', 'sale') AND is_active AND is_plausible AND NOT is_junk
+      AND dup_of IS NULL
 ),
+-- The bar is set by normal leases. Mid-stay flats are still scored, against
+-- that same bar, so they read as the dear option they are.
+peers AS (SELECT * FROM base WHERE NOT is_midstay),
+-- Keys are COALESCEd to '' so the joins below are plain equalities, which
+-- Postgres can hash. IS NOT DISTINCT FROM forces a nested loop over every
+-- pair, and took minutes once the base grew.
 by_parish AS (
-    SELECT transaction_type, council, parish, property_type, typology, count(*) AS n,
+    SELECT transaction_type, COALESCE(council, '') AS council, COALESCE(parish, '') AS parish,
+           COALESCE(property_type, '') AS property_type, COALESCE(typology, '') AS typology,
+           count(*) AS n,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS med_ppm,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur)     AS med_price
-    FROM base GROUP BY 1, 2, 3, 4, 5
+    FROM peers GROUP BY 1, 2, 3, 4, 5
 ),
 by_council AS (
-    SELECT transaction_type, council, property_type, typology, count(*) AS n,
+    SELECT transaction_type, COALESCE(council, '') AS council,
+           COALESCE(property_type, '') AS property_type, COALESCE(typology, '') AS typology,
+           count(*) AS n,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS med_ppm,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur)     AS med_price
-    FROM base GROUP BY 1, 2, 3, 4
+    FROM peers GROUP BY 1, 2, 3, 4
 ),
 by_council_any AS (
-    SELECT transaction_type, council, property_type, count(*) AS n,
+    SELECT transaction_type, COALESCE(council, '') AS council,
+           COALESCE(property_type, '') AS property_type, count(*) AS n,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS med_ppm,
            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_eur)     AS med_price
-    FROM base GROUP BY 1, 2, 3
+    FROM peers GROUP BY 1, 2, 3
+),
+-- Where else the same flat is advertised, for "também em" on the card.
+copies AS (
+    SELECT c.dup_of AS id,
+           jsonb_agg(jsonb_build_object(
+               'source', c.source, 'url', c.url, 'id', c.id,
+               'price', (SELECT s.price_eur FROM listing_snapshots s WHERE s.listing_id = c.id
+                          ORDER BY s.observed_at DESC LIMIT 1)) ORDER BY c.source) AS also_on
+    FROM listings c
+    WHERE c.dup_of IS NOT NULL AND c.gone_at IS NULL
+    GROUP BY c.dup_of
 ),
 peer AS (
     SELECT b.id,
@@ -168,12 +220,17 @@ peer AS (
            CASE WHEN p.n >= 8 THEN p.med_price WHEN c.n >= 8 THEN c.med_price
                 WHEN a.n >= 8 THEN a.med_price END                        AS peer_med_price
     FROM base b
-    LEFT JOIN by_parish p      ON (p.transaction_type, p.council, p.parish, p.property_type, p.typology)
-                                IS NOT DISTINCT FROM (b.transaction_type, b.council, b.parish, b.property_type, b.typology)
-    LEFT JOIN by_council c     ON (c.transaction_type, c.council, c.property_type, c.typology)
-                                IS NOT DISTINCT FROM (b.transaction_type, b.council, b.property_type, b.typology)
-    LEFT JOIN by_council_any a ON (a.transaction_type, a.council, a.property_type)
-                                IS NOT DISTINCT FROM (b.transaction_type, b.council, b.property_type)
+    LEFT JOIN by_parish p      ON p.transaction_type = b.transaction_type
+                              AND p.council = COALESCE(b.council, '') AND p.parish = COALESCE(b.parish, '')
+                              AND p.property_type = COALESCE(b.property_type, '')
+                              AND p.typology = COALESCE(b.typology, '')
+    LEFT JOIN by_council c     ON c.transaction_type = b.transaction_type
+                              AND c.council = COALESCE(b.council, '')
+                              AND c.property_type = COALESCE(b.property_type, '')
+                              AND c.typology = COALESCE(b.typology, '')
+    LEFT JOIN by_council_any a ON a.transaction_type = b.transaction_type
+                              AND a.council = COALESCE(b.council, '')
+                              AND a.property_type = COALESCE(b.property_type, '')
 )
 SELECT b.*, p.peer_level, p.peer_n,
        ROUND(p.peer_med_ppm::numeric, 2)                                   AS peer_med_ppm,
@@ -185,18 +242,24 @@ SELECT b.*, p.peer_level, p.peer_n,
        -- 132 m²"), the headline price alone rewards a tiny flat, so it takes
        -- the mean of the two.
        ROUND(((1 - b.price_per_sqm / NULLIF(p.peer_med_ppm, 0))
-            + (1 - b.price_eur / NULLIF(p.peer_med_price, 0)))::numeric * 50, 1)  AS deal_score
+            + (1 - b.price_eur / NULLIF(p.peer_med_price, 0)))::numeric * 50, 1)  AS deal_score,
+       COALESCE(cp.also_on, '[]'::jsonb)                                    AS also_on
 FROM base b
-JOIN peer p ON p.id = b.id;
+JOIN peer p ON p.id = b.id
+LEFT JOIN copies cp ON cp.id = b.id;
 
 -- Every price move, with direction and size. The reason we store snapshots.
+-- Same rules as v_listing_history: plausible prices, and moves of at least
+-- 1% (rent) or 0.5% (sale).
 CREATE VIEW v_price_changes AS
 WITH ordered AS (
     SELECT
-        s.listing_id, s.observed_at, s.price_eur,
+        s.listing_id, s.observed_at, s.price_eur, l.transaction_type,
         LAG(s.price_eur)   OVER w AS prev_price,
         LAG(s.observed_at) OVER w AS prev_observed_at
     FROM listing_snapshots s
+    JOIN listings l ON l.id = s.listing_id
+    WHERE is_plausible_price(l.transaction_type, s.price_eur)
     WINDOW w AS (PARTITION BY s.listing_id ORDER BY s.observed_at)
 )
 SELECT
@@ -205,11 +268,12 @@ SELECT
     o.prev_price, o.price_eur AS new_price,
     (o.price_eur - o.prev_price)                                   AS delta_eur,
     ROUND((o.price_eur - o.prev_price) / NULLIF(o.prev_price, 0) * 100, 2) AS delta_pct,
-    CASE WHEN o.price_eur < o.prev_price THEN 'drop' ELSE 'rise' END AS direction
+    CASE WHEN o.price_eur < o.prev_price THEN 'drop' ELSE 'rise' END AS direction,
+    l.source, is_midstay(l.agency_name, NULL)                      AS is_midstay
 FROM ordered o
 JOIN listings l ON l.id = o.listing_id
 WHERE o.prev_price IS NOT NULL
-  AND o.price_eur IS DISTINCT FROM o.prev_price;
+  AND is_price_move(o.transaction_type, o.prev_price, o.price_eur);
 
 -- The core comparison table: what does a T2 cost where.
 CREATE VIEW v_parish_stats AS
@@ -223,7 +287,7 @@ SELECT
     ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY area_sqm)::numeric, 0)      AS median_area_sqm,
     ROUND(AVG(days_on_market)::numeric, 0)                                        AS avg_days_on_market
 FROM v_listing_current
-WHERE is_active AND is_plausible AND NOT is_junk
+WHERE is_active AND is_plausible AND NOT is_junk AND NOT is_midstay AND dup_of IS NULL
 GROUP BY council, parish, transaction_type, property_type, typology;
 
 -- Market drift over time. Needs a few weeks of history before it says anything.
@@ -238,9 +302,7 @@ FROM listing_snapshots s
 JOIN listings l ON l.id = s.listing_id
 WHERE s.price_eur IS NOT NULL
   AND l.area_sqm BETWEEN 10 AND 3000
-  AND CASE l.transaction_type
-          WHEN 'rent' THEN s.price_eur BETWEEN 200 AND 20000
-          WHEN 'sale' THEN s.price_eur BETWEEN 20000 AND 30000000
-          ELSE true
-      END
+  AND is_plausible_price(l.transaction_type, s.price_eur)
+  AND NOT is_midstay(l.agency_name, s.title)
+  AND l.dup_of IS NULL
 GROUP BY 1, 2, 3, 4, 5;

@@ -188,6 +188,36 @@
       h("a", { class: "btn", href: "#/definicoes" }, "Gerir alertas"));
   }
 
+  /* What left the market and how fast, by how cheap it was (market.departures).
+     Relists are left out: the flat did not leave, it was posted again. */
+  const BAND_LABEL = { "muito abaixo": "15% ou mais abaixo", "abaixo": "5 a 15% abaixo", "na mediana": "Na mediana (±5%)", "acima": "5 a 15% acima", "muito acima": "15% ou mais acima" };
+  const BAND_COLOR = { "muito abaixo": "var(--teal)", "abaixo": "var(--teal)", "na mediana": "var(--ramp-4)", "acima": "var(--clay)", "muito acima": "var(--clay)" };
+  function speed(dep, mode) {
+    const max = Math.max(1, ...dep.bands.map((b) => b.median_days || 0));
+    return h("div", { class: "card main", style: { display: "flex", flexDirection: "column", gap: "14px" } },
+      h("div", null, h("h2", null, "Quanto tempo duram"),
+        h("p", { class: "sub" }, "Dias no mercado (mediana) dos anúncios que saíram nos últimos " + dep.window_days + " dias, pelo preço face à mediana do concelho no dia em que saíram")),
+      h("div", { class: "bars" }, dep.bands.map((b) => h("div", { class: "bar", style: { cursor: "default" } },
+        h("span", { class: "l" }, h("span", null, BAND_LABEL[b.band] || b.band),
+          h("b", null, b.median_days !== null ? nf(b.median_days) + " dias" : "poucos dados", h("span", { class: "xsmall muted", style: { fontWeight: 400 } }, " · n=" + nf(b.n)))),
+        h("span", { class: "track" }, h("span", { class: "fill", style: { width: (b.median_days ? (b.median_days / max) * 100 : 0) + "%", background: BAND_COLOR[b.band] } }))))),
+      h("p", { class: "xsmall muted", style: { margin: 0 } }, "Conta desde a primeira publicação (do primeiro anúncio, se foi republicado). Média duração fica de fora."));
+  }
+  function departed(dep, mode) {
+    const why = { rented: "arrendado, diz o portal", removed: "anúncio removido", missing: "saiu do portal" };
+    const items = dep.recent.slice(0, 8);
+    return h("aside", { class: "card side", "aria-label": "Saíram" },
+      h("h2", null, "Saíram"),
+      h("p", { class: "sub", style: { margin: 0 } }, nf(dep.n_recent) + " anúncios nos últimos " + dep.recent_days + " dias"),
+      items.length ? h("ul", { class: "feed" }, items.map((r) => h("li", null,
+        h("div", { style: { minWidth: 0, flex: 1 } },
+          h("a", { href: "#/anuncio/" + r.id, style: { fontWeight: 500, color: "inherit" } },
+            (r.typology ? r.typology + " · " : "") + App.short(r.parish || r.council || "") + " · " + (mode === "sale" ? App.eur(r.price_eur) : App.eur(r.price_eur) + "/mês")),
+          h("div", { class: "xsmall muted" }, [App.ago(r.gone_at), why[r.gone_reason] || "", r.days !== null ? App.days(r.days) + " no mercado" : "",
+            r.discount_pct !== null ? (r.discount_pct >= 0 ? nf(r.discount_pct) + "% abaixo" : nf(-r.discount_pct) + "% acima") : "", App.portal(r.source)].filter(Boolean).join(" · "))))))
+        : h("p", { class: "muted small" }, "Nada saiu nestes dias."));
+  }
+
   App.pages.imoveis = {
     title: "Imóveis",
     async render() {
@@ -201,6 +231,7 @@
           price_max: mode === "rent" ? pc.max_price : null, typologies: mode === "rent" ? pc.typologies : null })),
         api("diary"),
       ]);
+      const dep = await api("departures?mode=" + mode).catch(() => null);
       const withData = zones.zones.filter((z) => z.median_ppm !== null);
       if (!selected || !zones.zones.find((z) => z.parish === selected)) {
         const best = withData.sort((a, b) => b.n - a.n)[0];
@@ -219,7 +250,8 @@
         card.markSelected();
       });
       add(mapWrap, card, panel);
-      add(root, [kpis(o, mode), mapWrap, h("section", { class: "split" }, deals(dl.items, mode), diary(o, diaryRows))]);
+      add(root, [kpis(o, mode), mapWrap, h("section", { class: "split" }, deals(dl.items, mode), diary(o, diaryRows)),
+        dep && dep.n ? h("section", { class: "split", "aria-label": "Saídas do mercado" }, speed(dep, mode), departed(dep, mode)) : null]);
       return root;
     },
   };

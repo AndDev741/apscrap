@@ -161,10 +161,11 @@ def overview(mode: str = "rent", user=Depends(current_user)):
     with connect() as conn:
         k = conn.execute(
             """SELECT count(*) AS n,
-                      count(*) FILTER (WHERE first_seen_at > now() - interval '7 days') AS new7,
+                      count(*) FILTER (WHERE first_seen_at > now() - interval '7 days' AND NOT is_backlog) AS new7,
                       percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_sqm)
                           FILTER (WHERE property_type = 'flat') AS ppm
-                 FROM mv_deals WHERE transaction_type = %s AND council = ANY(%s)""",
+                 FROM mv_deals WHERE transaction_type = %s AND council = ANY(%s)
+                  AND NOT is_midstay""",
             (mode, councils)).fetchone()
         drops = conn.execute(
             """SELECT count(*) AS n,
@@ -174,7 +175,7 @@ def overview(mode: str = "rent", user=Depends(current_user)):
                              AND COALESCE(l2.relist_root, l2.id) = d.root_id)) AS saved
                  FROM v_price_changes c JOIN mv_deals d ON d.id = c.listing_id
                 WHERE c.direction = 'drop' AND c.changed_at > now() - interval '7 days'
-                  AND d.transaction_type = %s AND d.council = ANY(%s)""",
+                  AND d.transaction_type = %s AND d.council = ANY(%s) AND NOT d.is_midstay""",
             (mode, councils)).fetchone()
         sl = conn.execute(
             """SELECT count(*) AS saved,
@@ -192,6 +193,12 @@ def overview(mode: str = "rent", user=Depends(current_user)):
         "saved": sl["saved"], "agree": sl["agree"],
         "events": market.events(mode, councils, saved_ids),
     })
+
+
+@app.get("/api/departures")
+def departures(mode: str = "rent", user=Depends(current_user)):
+    """What left the market lately and how fast, by price band (IM-3)."""
+    return _json(market.departures(mode, _councils(appsettings.get())))
 
 
 @app.get("/api/zones")
@@ -221,6 +228,8 @@ def _filters_from(request: Request) -> dict:
         "commute_mode": q.get("commute_mode") or "transit",
         "sort": q.get("sort", "recent"),
         "ids": lst("ids"),
+        "include_midstay": q.get("midstay") in ("1", "true"),
+        "sources": lst("sources"),
     }
 
 

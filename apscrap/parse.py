@@ -129,17 +129,123 @@ def _process_one(conn, page, stats) -> None:
         return
     source = SOURCES[page["source"]]
 
-    if page["kind"] == "search":
-        for listing, snapshot in source.parse_search_items(payload):
-            listing["fetched_at"] = page["fetched_at"]
-            listing_id = conn.execute(UPSERT_LISTING, listing).fetchone()["id"]
-            snapshot |= {"listing_id": listing_id, "raw_page_id": page["id"],
-                         "fetched_at": page["fetched_at"]}
-            conn.execute(INSERT_SNAPSHOT, snapshot)
-            stats["listings"] += 1
-            stats["snapshots"] += 1
+    if page["source"] == "imovirtual":
+        if page["kind"] == "search":
+            for listing, snapshot in source.parse_search_items(payload):
+                listing["fetched_at"] = page["fetched_at"]
+                listing_id = conn.execute(UPSERT_LISTING, listing).fetchone()["id"]
+                snapshot |= {"listing_id": listing_id, "raw_page_id": page["id"],
+                             "fetched_at": page["fetched_at"]}
+                conn.execute(INSERT_SNAPSHOT, snapshot)
+                stats["listings"] += 1
+                stats["snapshots"] += 1
+        elif page["kind"] == "detail":
+            attrs = source.parse_detail(payload)
+            attrs |= {"source": page["source"], "url": page["url"], "fetched_at": page["fetched_at"]}
+            conn.execute(UPDATE_DETAIL, attrs)
+        return
 
-    elif page["kind"] == "detail":
-        attrs = source.parse_detail(payload)
-        attrs |= {"source": page["source"], "url": page["url"], "fetched_at": page["fetched_at"]}
-        conn.execute(UPDATE_DETAIL, attrs)
+    # Every other portal: parse_page() yields (listing, snapshot) pairs.
+    for listing, snapshot in source.parse_page(page["kind"], payload):
+        _apply(conn, page, listing, snapshot, stats)
+
+
+# Columns UPSERT_LISTING needs; a portal fills what it knows.
+_CORE = ("source", "external_id", "url", "transaction_type", "property_type", "typology",
+         "typology_inferred", "rooms_total", "area_sqm", "floor", "district", "council", "parish",
+         "neighborhood", "street", "is_private_owner", "agency_name", "listed_at", "thumbnail_url")
+
+UPDATE_EXTRA = """
+UPDATE listings SET
+    latitude    = COALESCE(%(latitude)s,    latitude),
+    longitude   = COALESCE(%(longitude)s,   longitude),
+    build_year  = COALESCE(%(build_year)s,  build_year),
+    energy_cert = COALESCE(%(energy_cert)s, energy_cert),
+    condition   = COALESCE(%(condition)s,   condition),
+    deposit_eur = COALESCE(%(deposit_eur)s, deposit_eur),
+    description = COALESCE(%(description)s, description),
+    image_urls  = COALESCE(%(image_urls)s,  image_urls),
+    source_updated_at = GREATEST(%(source_updated_at)s, source_updated_at),
+    -- union: the search card and the detail page each know some extras
+    extras      = CASE WHEN %(extras)s::text[] IS NULL THEN extras
+                       ELSE (SELECT array_agg(DISTINCT e ORDER BY e)
+                               FROM unnest(COALESCE(extras, '{}') || %(extras)s::text[]) e) END,
+    detail_fetched_at = CASE WHEN %(is_detail)s THEN %(fetched_at)s ELSE detail_fetched_at END
+WHERE id = %(id)s
+"""
+
+# A page that only adds to an advert we already have (ERA's detail API).
+# Location from coordinates wins over the portal's words, so it only fills.
+UPDATE_DETAIL_ONLY = """
+UPDATE listings SET
+    council     = COALESCE(council, %(council)s),
+    parish      = COALESCE(parish,  %(parish)s),
+    description = COALESCE(%(description)s, description),
+    extras      = CASE WHEN %(extras)s::text[] IS NULL THEN extras
+                       ELSE (SELECT array_agg(DISTINCT e ORDER BY e)
+                               FROM unnest(COALESCE(extras, '{}') || %(extras)s::text[]) e) END,
+    detail_fetched_at = COALESCE(detail_fetched_at, %(fetched_at)s)
+WHERE source = %(source)s AND external_id = %(external_id)s
+"""
+
+# A page that proves the advert is online without a price (a sitemap): the
+# last known price carries over to today, so every live advert has one
+# snapshot a day, as on Imovirtual. Not for adverts the portal says are let.
+CARRY_SNAPSHOT = """
+INSERT INTO listing_snapshots (
+    listing_id, price_eur, price_per_sqm, title, is_promoted, pushed_up_at, raw_page_id,
+    observed_at, observed_date)
+SELECT s.listing_id, s.price_eur, s.price_per_sqm, s.title, s.is_promoted, s.pushed_up_at,
+       %(raw_page_id)s, %(fetched_at)s, (%(fetched_at)s AT TIME ZONE 'Europe/Lisbon')::date
+  FROM listing_snapshots s
+  JOIN listings l ON l.id = s.listing_id
+ WHERE s.listing_id = %(listing_id)s AND l.gone_reason IS DISTINCT FROM 'rented'
+   AND s.observed_at < %(fetched_at)s
+ ORDER BY s.observed_at DESC
+ LIMIT 1
+ON CONFLICT (listing_id, observed_date) DO NOTHING
+"""
+
+# What the portal says about availability. 'rented' ends the advert now;
+# anything else brings back an advert we had as let.
+UPDATE_STATUS = """
+UPDATE listings SET
+    is_reserved = (%(status)s = 'reserved'),
+    gone_at     = CASE WHEN %(status)s = 'rented' THEN COALESCE(gone_at, %(fetched_at)s)
+                       WHEN gone_reason = 'rented' THEN NULL ELSE gone_at END,
+    gone_reason = CASE WHEN %(status)s = 'rented' THEN 'rented'
+                       WHEN gone_reason = 'rented' THEN NULL ELSE gone_reason END
+WHERE id = %(id)s
+"""
+
+
+def _apply(conn, page, listing: dict, snapshot: dict | None, stats) -> None:
+    fetched_at = page["fetched_at"]
+    listing.setdefault("url", page["url"])
+    if listing.pop("_detail_only", False):
+        conn.execute(UPDATE_DETAIL_ONLY, {"council": None, "parish": None, "description": None,
+                                          "extras": None, "fetched_at": fetched_at, **listing})
+        return
+    is_detail = listing.pop("_detail", False)
+    status = listing.pop("status", None)
+    core = {k: listing.get(k) for k in _CORE}
+    core["typology_inferred"] = bool(core["typology_inferred"])
+    core["fetched_at"] = fetched_at
+    listing_id = conn.execute(UPSERT_LISTING, core).fetchone()["id"]
+    stats["listings"] += 1
+
+    extra = {k: listing.get(k) for k in ("latitude", "longitude", "build_year", "energy_cert",
+                                         "condition", "deposit_eur", "description", "image_urls",
+                                         "source_updated_at", "extras")}
+    if any(v is not None for v in extra.values()) or is_detail:
+        conn.execute(UPDATE_EXTRA, extra | {"id": listing_id, "is_detail": is_detail,
+                                            "fetched_at": fetched_at})
+    if status:
+        conn.execute(UPDATE_STATUS, {"id": listing_id, "status": status, "fetched_at": fetched_at})
+
+    base = {"listing_id": listing_id, "raw_page_id": page["id"], "fetched_at": fetched_at}
+    if snapshot:
+        conn.execute(INSERT_SNAPSHOT, {"is_promoted": None, "pushed_up_at": None, **snapshot, **base})
+        stats["snapshots"] += 1
+    elif page["kind"] == "search":
+        conn.execute(CARRY_SNAPSHOT, base)

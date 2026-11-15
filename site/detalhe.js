@@ -76,6 +76,16 @@
     return wrap;
   }
 
+  /* Why and when an advert left: the portal said so (ERA, KW), its page is
+     gone, or it simply stopped appearing (lifecycle.py). */
+  function goneText(r) {
+    const when = r.gone_at ? " " + App.ago(r.gone_at) : "";
+    if (r.gone_reason === "rented") return "Arrendado" + when + " (o portal diz)";
+    if (r.gone_reason === "relisted") return "Retirado" + when + " e republicado";
+    if (r.gone_reason === "removed") return "Anúncio removido" + when;
+    return "Saiu do portal" + when;
+  }
+
   function fact(k, v) { return v === null || v === undefined || v === "" ? null : h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: "v", style: { fontSize: "18px" } }, v)); }
 
   App.pages.anuncio = {
@@ -100,12 +110,15 @@
           h("h1", { style: { marginTop: "6px" } }, title),
           h("p", { class: "muted", style: { margin: "6px 0 0" } }, r.title)),
         h("div", { class: "row", style: { flex: "0 0 auto", alignItems: "center" } }, App.saveButton("listing", r.id, r.saved, title),
-          h("a", { class: "btn dark big", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Ver no Imovirtual", App.icon("out", 14)))));
+          h("a", { class: "btn dark big", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Ver no " + App.portal(r.source), App.icon("out", 14)))));
       add(root, h("section", { class: "split" },
         h("div", { class: "main", style: { display: "flex", flexDirection: "column", gap: "16px" } }, gal,
           h("div", { class: "card" },
             h("div", { class: "zone-main" }, h("div", { class: "big" }, mode === "sale" ? App.eur(r.price_eur) : App.eur(r.price_eur) + "/mês"),
-              App.dealBadge(r.discount_pct), r.is_active ? null : h("span", { class: "pill bad" }, "Já não está anunciado")),
+              App.dealBadge(r.discount_pct), r.is_active ? null : h("span", { class: "pill bad" }, goneText(r)),
+              r.is_reserved && r.is_active ? h("span", { class: "pill neutral" }, "Reservado") : null,
+              r.is_midstay ? h("span", { class: "pill neutral", title: "Plataforma de arrendamento ao mês (1 a 12 meses), mobilado. Fica fora das medianas." }, "Média duração") : null),
+            App.alsoOn(r, "small muted"),
             h("p", { style: { margin: 0, fontWeight: 500 } }, App.fairSentence(r)),
             ine ? h("p", { class: "small muted", style: { margin: 0 } }, "INE para " + (r.parish || r.council) + ": " + App.ppm(ine.value, mode) + " (" + (mode === "sale" ? "vendas" : "novos contratos") + ", 12 meses até " + App.dateShort(ine.period_end) + "). Este anúncio: " + App.ppm(r.price_per_sqm, mode) + ".") : null,
             h("div", { class: "facts" }, fact("Área", r.area_sqm ? nf(r.area_sqm) + " m²" : null), fact("€/m²", App.ppm(r.price_per_sqm, mode)), fact("Andar", r.floor),

@@ -3,7 +3,7 @@ import logging
 
 from .db import connect, finish_run, save_raw_page, start_run
 from .sources import SOURCES
-from .sources.base import Fetcher
+from .sources.base import CrawlContext, Fetcher
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,10 @@ def crawl_search(
 
                 if payload is None:
                     log.warning("no payload at %s (HTTP %s), stopping", url, resp.status_code)
+                    if page < total_pages or page == 1:
+                        # Recorded on the run (status failed) so that
+                        # lifecycle.py does not read the unseen adverts as gone.
+                        error = f"stopped at page {page} of {total_pages} (HTTP {resp.status_code})"
                     break
 
                 if page == 1:
@@ -61,7 +65,7 @@ def crawl_search(
             finish_run(conn, run_id, pages, items, error)
             fetcher.close()
 
-    return {"run_id": run_id, "pages": pages, "items": items}
+    return {"run_id": run_id, "pages": pages, "items": items, **({"error": error} if error else {})}
 
 
 def crawl_details(source_name: str, limit: int = 100) -> dict:
@@ -103,6 +107,9 @@ def crawl_details(source_name: str, limit: int = 100) -> dict:
                 payload = source.detail_payload(resp.text) if resp.status_code == 200 else None
                 save_raw_page(conn, run_id, source_name, "detail",
                               row["url"], resp.status_code, payload)
+                if resp.status_code in (404, 410):
+                    from .lifecycle import mark_removed
+                    mark_removed(conn, row["id"])
                 # Mark it done either way. A 404 means the advert is gone, and
                 # retrying it every night forever would be pointless traffic.
                 conn.execute(
@@ -124,3 +131,29 @@ def crawl_details(source_name: str, limit: int = 100) -> dict:
             fetcher.close()
 
     return {"run_id": run_id, "fetched": fetched}
+
+
+def crawl_source(source_name: str, councils: list[str], detail_limit: int, **kw) -> dict:
+    """One night of a portal other than Imovirtual: the source walks its own
+    site (sitemaps, search pages, APIs) and stores what it reads in raw_pages.
+    Problems that leave the crawl incomplete mark the run failed, so the
+    lifecycle step leaves that portal's adverts alone tonight."""
+    source = SOURCES[source_name]
+    fetcher = Fetcher(delay=source.delay)
+    error = None
+    with connect() as conn:
+        run_id = start_run(conn, source_name, {"councils": councils, "detail_limit": detail_limit})
+        ctx = CrawlContext(fetcher=fetcher, conn=conn, run_id=run_id, source=source_name,
+                           councils=councils, detail_limit=detail_limit)
+        try:
+            source.crawl(ctx, **kw)
+            if ctx.problems:
+                error = "; ".join(ctx.problems)[:1000]
+        except Exception as exc:  # noqa: BLE001 - recorded on the run, then re-raised
+            conn.rollback()
+            error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            finish_run(conn, run_id, ctx.pages, ctx.items, error)
+            fetcher.close()
+    return {"run_id": run_id, "pages": ctx.pages, "items": ctx.items, **({"error": error} if error else {})}

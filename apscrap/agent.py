@@ -301,13 +301,19 @@ Views principais (lê sempre estas, nunca tabelas cruas):
   council, parish, extras (text[]), n_drops, max_price, first_price, last_drop_on, price_path (jsonb [[data, preço]]),
   days_on_market, chain_days_on_market (inclui republicações), n_relists, first_seen_at, is_temporary,
   is_private_owner, agency_name, peer_level ('parish'|'council'|'council_any'), peer_n, peer_med_ppm,
-  peer_med_price, discount_pct (positivo = mais barato que os vizinhos por m²), deal_score.
+  peer_med_price, discount_pct (positivo = mais barato que os vizinhos por m²), deal_score,
+  source ('imovirtual'|'remax'|'casasapo'|'era'|'kw'), also_on (jsonb: o mesmo imóvel noutros portais),
+  is_midstay (Uniplaces/Spacest/UKIO, ao mês: exclui-os das medianas e das respostas salvo pedido),
+  is_reserved, is_backlog (já estava no portal na primeira recolha: não é "novo").
+  Cada imóvel aparece uma vez: cópias noutros portais ficam em also_on.
 - market_agg_daily: day, council, parish ('' = concelho inteiro), transaction_type, property_type,
   typology ('' = todas), n, median_price, median_ppm. Histórico diário próprio, desde 2026-10-30 (com um buraco antes).
 - ine_values: indicator ('sale_ppm' vendas €/m² | 'rent_ppm' rendas €/m² de novos contratos), period, period_end,
   council, parish, value. Medianas oficiais dos últimos 12 meses, trimestrais.
 - v_price_changes: listing_id, url, council, parish, typology, changed_at, prev_price, new_price, delta_eur,
-  delta_pct, direction ('drop'|'rise').
+  delta_pct, direction ('drop'|'rise'), source, is_midstay. Só mudanças de 1% ou mais (0,5% na venda).
+- v_listing_current: todos os anúncios, ativos ou não. gone_at (quando saiu), gone_reason ('missing' saiu do
+  portal | 'relisted' republicado | 'removed' página removida | 'rented' o portal diz arrendado), days_to_gone.
 - v_shortlist: kind ('listing'|'car'), item_id, vote_a, vote_b, n_notes.
 - v_car_current e v_car_deals: carros dos modelos seguidos (make, model, year, km, fuel, gearbox, body_type,
   price_eur, age_years, peer_med_price, peer_n, discount_pct, rating 'bom'|'justo'|'acima').

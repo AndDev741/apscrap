@@ -323,6 +323,18 @@
       count);
   };
 
+  /* Portals adverts come from, and where else the same flat is advertised
+     (dedup.py links copies on other portals to the one shown). */
+  App.PORTALS = { imovirtual: "Imovirtual", remax: "RE/MAX", casasapo: "Casa Sapo", era: "ERA", kw: "KW" };
+  App.portal = (s) => App.PORTALS[s || "imovirtual"] || s;
+  App.alsoOn = (r, cls) => {
+    const list = (r.also_on || []).filter((x) => x && x.url);
+    if (!list.length) return null;
+    return h("div", { class: cls || "xsmall muted also" }, "Também em ",
+      list.map((x, i) => [i ? " · " : "", h("a", { href: x.url, target: "_blank", rel: "noopener noreferrer" },
+        App.portal(x.source) + (x.price && Number(x.price) !== Number(r.price_eur) ? " (" + App.eur(x.price) + ")" : ""))]));
+  };
+
   App.listingCard = (r, opts = {}) => {
     const mode = r.transaction_type || App.state.mode;
     const title = (r.typology ? r.typology + " · " : "") + App.short(r.parish || r.council || "");
@@ -333,6 +345,8 @@
     photo.appendChild(App.saveButton("listing", r.id, r.saved, title));
     const tags = [...(r.extras || [])];
     if (r.is_temporary) tags.unshift("Temporário");
+    if (r.is_midstay) tags.unshift("Média duração");
+    if (r.is_reserved) tags.unshift("Reservado");
     if (r.property_type === "house") tags.unshift("Moradia");
     const d = r.chain_days_on_market ?? r.days_on_market;
     return h("article", { class: "lcard" + (opts.compact ? " deal-card" : "") },
@@ -343,10 +357,11 @@
         r.peer_med_ppm ? h("div", { class: "small muted" }, "Mediana da zona: " + App.ppm(r.peer_med_ppm, mode) + " (n=" + r.peer_n + ")") : null,
         tags.length && !opts.compact ? h("div", { class: "tags" }, tags.slice(0, 5).map((t) => h("span", null, t))) : null,
         h("div", { class: "hist" }, App.historyLine(r)),
+        opts.compact ? null : App.alsoOn(r),
         opts.votes ? App.votes("listing", r.id, r.votes) : null,
         h("div", { class: "foot" },
           h("span", { class: "xsmall muted" }, d !== null && d !== undefined ? App.days(d) + " no mercado" : "", " ", App.commuteChips(r.commute, true)),
-          h("a", { class: "btn dark", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Ver no Imovirtual", App.icon("out", 14)))));
+          h("a", { class: "btn dark", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Ver no " + App.portal(r.source), App.icon("out", 14)))));
   };
 
   /* Sparkline from [[date, value], ...]. */

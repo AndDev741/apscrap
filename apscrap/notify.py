@@ -184,12 +184,12 @@ def diary_facts(conn, settings: dict) -> dict:
     new = conn.execute(
         """SELECT count(*) AS n, count(*) FILTER (WHERE price_eur <= %s) AS in_budget,
                   count(*) FILTER (WHERE discount_pct > 5) AS below
-             FROM mv_deals WHERE transaction_type = %s AND council = ANY(%s)
-              AND first_seen_at > now() - interval '7 days'""", (budget or 1e12, mode, councils)).fetchone()
+             FROM mv_deals WHERE transaction_type = %s AND council = ANY(%s) AND NOT is_midstay
+              AND NOT is_backlog AND first_seen_at > now() - interval '7 days'""", (budget or 1e12, mode, councils)).fetchone()
     drops = conn.execute(
         """SELECT count(*) AS n FROM v_price_changes c JOIN mv_deals d ON d.id = c.listing_id
             WHERE c.direction = 'drop' AND c.changed_at > now() - interval '7 days'
-              AND d.transaction_type = %s AND d.council = ANY(%s)""", (mode, councils)).fetchone()
+              AND d.transaction_type = %s AND d.council = ANY(%s) AND NOT d.is_midstay""", (mode, councils)).fetchone()
     sl = conn.execute(
         """SELECT count(*) AS saved,
                   count(*) FILTER (WHERE vote_a = 'gosto' AND vote_b = 'gosto') AS agree

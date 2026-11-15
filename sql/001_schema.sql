@@ -370,3 +370,81 @@ CREATE TABLE IF NOT EXISTS car_snapshots (
     price_eur      numeric(12,2),
     PRIMARY KEY (car_id, observed_date)
 );
+
+-- ---------------------------------------------------------------------------
+-- Added 2026-11-15: when an advert left, mid-stay platforms, and more portals.
+-- ---------------------------------------------------------------------------
+
+-- An advert is active until apscrap/lifecycle.py marks it gone: missing from
+-- its portal for longer than that portal's grace period, or flagged rented by
+-- the portal itself (ERA, KW). gone_at is when it was last seen live.
+--   gone_reason: 'missing'  not in the crawl any more
+--                'relisted' missing, and a newer advert republishes it
+--                'removed'  its page answers 404/410
+--                'rented'   the portal says rented ("Já ERA", isRented)
+-- A gone advert that shows up again is active again (gone_at back to NULL).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'listings' AND column_name = 'gone_at') THEN
+        ALTER TABLE listings ADD COLUMN gone_at timestamptz;
+        ALTER TABLE listings ADD COLUMN gone_reason text;
+        -- One-off backfill with the rule the views used until now (not seen
+        -- in the three days before the portal's newest observation), so the
+        -- site does not flash every vanished advert back as active.
+        UPDATE listings l
+           SET gone_at = l.last_seen_at, gone_reason = 'missing'
+          FROM (SELECT source, max(last_seen_at) AS newest FROM listings GROUP BY source) s
+         WHERE s.source = l.source AND l.last_seen_at < s.newest - interval '3 days';
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS listings_live_idx ON listings (source) WHERE gone_at IS NULL;
+CREATE INDEX IF NOT EXISTS listings_gone_idx ON listings (gone_at DESC) WHERE gone_at IS NOT NULL;
+
+-- The portal marks it reserved but still shows it (ERA "Reservado", KW).
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS is_reserved boolean;
+-- When the portal says the advert last changed (RE/MAX sitemap lastmod, KW).
+-- A newer value than detail_fetched_at queues the detail page again.
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS source_updated_at timestamptz;
+-- Free-text description where the portal gives it on the search card or the
+-- detail page (Casa Sapo, RE/MAX, ERA, KW). Imovirtual's stays in raw_pages.
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS description text;
+
+-- The same flat advertised on another portal (apscrap/dedup.py). dup_of points
+-- at the copy the app shows; that one lists the others as "também em".
+-- Separate from relist_of, which links reposts on the same portal over time.
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS dup_of bigint REFERENCES listings(id) ON DELETE SET NULL;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS dup_checked_at timestamptz;
+CREATE INDEX IF NOT EXISTS listings_dup_idx ON listings (dup_of) WHERE dup_of IS NOT NULL;
+
+-- Mid-stay platforms: furnished flats let by the month (1 to 12 months), at
+-- about 35 €/m² against 22 for a normal lease, with prices that move by a few
+-- euros every day. They are a third of the rentals on Imovirtual and more than
+-- half of Lisboa's T1s, so left in they set the medians. The views keep them
+-- out of every median and deal score; the app shows them only on request.
+-- A function so the views and market_agg_daily agree.
+CREATE OR REPLACE FUNCTION is_midstay(agency text, title text) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $f$
+    SELECT COALESCE(agency ~* '^\s*(uniplaces|spacest|ukio)', false)
+        OR COALESCE(title ~* '(m[eé]dia dura[cç][aã]o|mid[- ]?term|mid[- ]?stay)', false)
+$f$;
+
+-- Price bounds an advert must fall in to count anywhere. Below them sit
+-- placeholders (Uniplaces posts €1 between tenants) and typos.
+CREATE OR REPLACE FUNCTION is_plausible_price(transaction_type text, price numeric) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $f$
+    SELECT CASE transaction_type
+               WHEN 'rent' THEN price BETWEEN 200 AND 20000
+               WHEN 'sale' THEN price BETWEEN 20000 AND 30000000
+               ELSE price > 0
+           END
+$f$;
+
+-- A change counts as a price move from 1% for rent and 0.5% for sale. Below
+-- that it is a €5 nudge to climb back up the search results, or a mid-stay
+-- platform's daily repricing, and says nothing about room to negotiate.
+CREATE OR REPLACE FUNCTION is_price_move(transaction_type text, prev numeric, price numeric) RETURNS boolean
+LANGUAGE sql IMMUTABLE AS $f$
+    SELECT prev > 0 AND price IS NOT NULL
+       AND abs(price - prev) / prev >= CASE transaction_type WHEN 'sale' THEN 0.005 ELSE 0.01 END
+$f$;

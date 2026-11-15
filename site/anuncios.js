@@ -1,5 +1,5 @@
 /* Anúncios: every advert with filters, photos and links. Properties come from
-   Imovirtual every night; cars only from the models you follow, fetched when
+   Imovirtual, RE/MAX, Casa Sapo, ERA and KW every night; cars only from the models you follow, fetched when
    you press the button (Standvirtual's terms). The filters live in the URL so
    a search can be shared between the two of you or saved as an alert. */
 (function () {
@@ -22,6 +22,7 @@
       council: g("council"), parish: g("parish"),
       typologies: l("typologies"), price_max: g("price_max"), area_min: g("area_min"),
       extras: l("extras"), below: g("below") === "1", drops: g("drops") === "1",
+      midstay: g("midstay") === "1", sources: l("sources"),
       max_commute: g("max_commute"), commute_who: g("commute_who") || "both", commute_mode: g("commute_mode") || "transit",
       sort: g("sort") || "", view: g("view") || "grid",
       body: g("body"), fuel: g("fuel"), year_min: g("year_min"), km_max: g("km_max"), cprice_max: g("cprice_max"),
@@ -32,7 +33,7 @@
   function propertyQuery(f, extra = {}) {
     return App.qs({ mode: f.mode, council: f.council, parish: f.parish, typologies: f.typologies, price_max: f.price_max, area_min: f.area_min,
       extras: f.extras, below: f.below, drops: f.drops, max_commute: f.max_commute, commute_who: f.max_commute ? f.commute_who : null,
-      commute_mode: f.max_commute ? f.commute_mode : null, sort: f.sort || "recent", ...extra });
+      commute_mode: f.max_commute ? f.commute_mode : null, midstay: f.midstay, sources: f.sources, sort: f.sort || "recent", ...extra });
   }
   function carQuery(f, extra = {}) {
     return App.qs({ body: f.body, fuel: f.fuel, year_min: f.year_min, km_max: f.km_max, price_max: f.cprice_max, automatic: f.automatic, good: f.good,
@@ -85,7 +86,24 @@
         h("div", { class: "seg fill", role: "group", "aria-label": "Meio" }, [["transit", "Transportes"], ["car", "Carro"]].map(([m, l]) =>
           h("button", { type: "button", "aria-pressed": f.commute_mode === m ? "true" : "false", onclick: () => update(f, { commute_mode: m }) }, l)))),
       h("label", { class: "check good" }, h("input", { type: "checkbox", checked: f.below, onchange: (e) => update(f, { below: e.target.checked }) }), "Só abaixo da mediana da zona"),
-      h("label", { class: "check" }, h("input", { type: "checkbox", checked: f.drops, onchange: (e) => update(f, { drops: e.target.checked }) }), "Só com baixas de preço"));
+      h("label", { class: "check" }, h("input", { type: "checkbox", checked: f.drops, onchange: (e) => update(f, { drops: e.target.checked }) }), "Só com baixas de preço"),
+      f.mode === "rent" ? h("div", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
+        h("label", { class: "check" }, h("input", { type: "checkbox", checked: f.midstay, onchange: (e) => update(f, { midstay: e.target.checked }) }),
+          "Incluir média duração" + (facets.midstay ? " · " + nf(facets.midstay) : "")),
+        h("span", { class: "xsmall muted" }, "Uniplaces, Spacest e UKIO: mobilados, ao mês, cerca de 50% mais caros. Ficam sempre fora das medianas.")) : null,
+      sourceFilter(f, facets.sources || {}));
+  }
+
+  /* Which portals to show. A flat on two portals counts for both. */
+  function sourceFilter(f, counts) {
+    const names = Object.keys(counts);
+    if (names.length < 2) return null;
+    const toggle = (s) => () => { const a = new Set(f.sources); a.has(s) ? a.delete(s) : a.add(s); update(f, { sources: [...a] }); };
+    return h("fieldset", { style: { border: 0, padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "8px" } },
+      h("legend", { class: "small", style: { fontWeight: 600, padding: 0, marginBottom: "6px" } }, "Portais"),
+      h("div", { class: "chips", role: "group", "aria-label": "Portais" }, names.map((s) =>
+        h("button", { type: "button", class: "chip", "aria-pressed": f.sources.includes(s) ? "true" : "false", onclick: toggle(s) }, App.portal(s) + " · " + nf(counts[s])))),
+      h("span", { class: "xsmall muted" }, "Sem nenhum escolhido, mostra todos. O mesmo imóvel em vários portais aparece uma vez."));
   }
 
   function carFilters(f, models) {
@@ -187,7 +205,7 @@
       add(root, h("div", { class: "page-head" },
         h("div", null, h("h1", null, "Todos os anúncios"),
           h("p", { class: "muted", style: { margin: "6px 0 0", fontSize: "14px" } }, isIm
-            ? "Imovirtual, recolhido todas as noites · " + pc.councils.join(", ")
+            ? "Imovirtual, RE/MAX, Casa Sapo, ERA e KW, recolhidos todas as noites · " + pc.councils.join(", ")
             : "Standvirtual, só os modelos que seguem, buscados quando carregam em Atualizar")),
         h("div", { class: "pills", role: "group", "aria-label": "Categoria" },
           h("button", { type: "button", "aria-pressed": isIm ? "true" : "false", onclick: () => update(f, { cat: "imoveis", sort: "" }) }, "Imóveis" + (isIm ? " · " + nf((totals.rent || 0) + (totals.sale || 0)) : "")),
@@ -213,7 +231,7 @@
       } else if (!list.length) {
         results.appendChild(h("div", { class: "empty" }, h("b", null, isIm ? "Nenhum anúncio com estes filtros" : "Sem carros para mostrar"),
           h("span", { class: "muted" }, isIm ? "Alarga o preço ou a zona, ou guarda a pesquisa para seres avisado quando aparecer." : "Sigam um modelo no separador Carros para ver os seus anúncios aqui."),
-          isIm ? h("button", { type: "button", class: "btn dark", onclick: () => update(f, { council: "", parish: "", typologies: [], price_max: "", area_min: "", extras: [], below: false, drops: false, max_commute: "" }) }, "Limpar filtros")
+          isIm ? h("button", { type: "button", class: "btn dark", onclick: () => update(f, { council: "", parish: "", typologies: [], price_max: "", area_min: "", extras: [], below: false, drops: false, max_commute: "", midstay: false, sources: [] }) }, "Limpar filtros")
             : h("a", { class: "btn dark", href: "#/carros" }, "Ir para Carros")));
       } else {
         const grid = h("div", { class: "grid-cards" }, list.map((r) => (isIm ? App.listingCard(r) : App.carCard(r))));

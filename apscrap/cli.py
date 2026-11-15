@@ -4,7 +4,7 @@ import logging
 import sys
 
 from . import alert, commute, db, export, fetch, parse
-from .config import DETAIL_LIMIT, RAW_SEARCH_KEEP_DAYS
+from .config import DETAIL_LIMIT, RAW_SEARCH_KEEP_DAYS, SOURCES_DETAIL_LIMIT
 
 # Where you might actually move. Edit this list, it drives the daily run.
 # On Imovirtual "lisboa" is the whole district, so Odivelas, Loures, Amadora and
@@ -47,6 +47,17 @@ def main(argv=None) -> int:
     r = sub.add_parser("daily", help="crawl, parse, enrich, prune, then publish the site and alert")
     r.add_argument("--max-pages", type=int)
     r.add_argument("--detail-limit", type=int, default=DETAIL_LIMIT)
+
+    so = sub.add_parser("sources", help="crawl ERA, RE/MAX, KW and Casa Sapo, then parse")
+    so.add_argument("--only", help="comma-separated subset, e.g. era,remax")
+    so.add_argument("--detail-limit", type=int, default=SOURCES_DETAIL_LIMIT,
+                    help="detail pages per portal per night")
+    so.add_argument("--councils", help="comma-separated; default: the app's property criteria")
+    so.add_argument("--force", action="store_true",
+                    help="crawl Casa Sapo outside the visit window its robots.txt asks for")
+
+    sub.add_parser("lifecycle", help="mark adverts that left their portal as gone")
+    sub.add_parser("dedup", help="link the same flat advertised on several portals")
 
     sub.add_parser("prune", help="delete parsed raw search pages past their retention")
 
@@ -102,6 +113,17 @@ def main(argv=None) -> int:
 
     elif args.cmd == "daily":
         return _daily(args)
+
+    elif args.cmd == "sources":
+        return _sources(args)
+
+    elif args.cmd == "lifecycle":
+        from . import lifecycle
+        print(lifecycle.run())
+
+    elif args.cmd == "dedup":
+        from . import dedup
+        print(dedup.run())
 
     elif args.cmd == "prune":
         print(db.prune_raw_search(RAW_SEARCH_KEEP_DAYS))
@@ -183,8 +205,12 @@ def _daily(args) -> int:
 
     # The app's read models. Each step stands alone: a failure here leaves the
     # crawl and yesterday's numbers intact.
-    from . import appsettings, carcost, ine, market, notify, relist
+    from . import appsettings, carcost, dedup, ine, lifecycle, market, notify, relist
     step("relist", relist.detect)
+    # After relist, so a vanished advert that was reposted reads 'relisted'.
+    step("lifecycle", lifecycle.run)
+    # Before the read models, which count each flat once.
+    step("dedup", dedup.run)
     step("aggregates", market.refresh_aggregates)
     step("read models", market.refresh_read_models)
     def _ine():
@@ -214,6 +240,37 @@ def _daily(args) -> int:
 
     if failed:
         logging.error("finished with failed steps: %s", ", ".join(failed))
+        return 1
+    return 0
+
+
+def _sources(args) -> int:
+    """The other portals, one after the other (each has its own host and its
+    own pace), then one parse. A portal that fails does not stop the next."""
+    from . import appsettings
+    from .sources import EXTRA_SOURCES
+    names = [s for s in (args.only.split(",") if args.only else EXTRA_SOURCES) if s]
+    councils = ([c.strip() for c in args.councils.split(",") if c.strip()] if args.councils
+                else appsettings.get("property_criteria")["councils"])
+    failed = []
+    for name in names:
+        try:
+            kw = {"force": True} if (name == "casasapo" and args.force) else {}
+            result = fetch.crawl_source(name, councils, args.detail_limit, **kw)
+            print(f"crawl {name}: {result}")
+            if result.get("error"):
+                failed.append(name)
+        except Exception:  # noqa: BLE001 - recorded, and the job still exits non-zero
+            logging.exception("crawl %s failed", name)
+            failed.append(name)
+        # Parse after each portal, so a later failure keeps the earlier work.
+        try:
+            print(f"parse: {parse.process_pending()}")
+        except Exception:  # noqa: BLE001
+            logging.exception("parse failed")
+            failed.append("parse")
+    if failed:
+        logging.error("finished with problems in: %s", ", ".join(failed))
         return 1
     return 0
 

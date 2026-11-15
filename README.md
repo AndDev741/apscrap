@@ -41,9 +41,9 @@ private owner, and the date the portal first published it.
 ## How it runs
 
 ```
-imovirtual.com
-     |  nightly CronJob in k3s (be-infra, apps/apscrap), 04:20 + jitter
-     v
+imovirtual.com                           remax.pt, kwportugal.pt, era.pt, casa.sapo.pt
+     |  apscrap-daily, 04:20 + jitter         |  apscrap-sources, 00:30 + jitter
+     v                                        v
   fetch.py  ------------------>  raw_pages      (search pages 60 days, details forever)
                                      |
                                      |  parsed_at IS NULL == unprocessed
@@ -65,7 +65,8 @@ imovirtual.com
       site_legacy/ + data.json           Telegram messages
    -> apscrap.pages.dev (old site)
                                      |
-            relist.py, market.py (aggregates, mv_deals), ine.py
+   relist.py, lifecycle.py (gone), dedup.py (same flat, two portals),
+            market.py (aggregates, mv_deals), ine.py
                                      |
                                      v
                        apscrap serve (web.py): site/ + /api
@@ -121,7 +122,10 @@ ad-hoc exploration on a laptop. Production does not run it.
 | `apscrap publish --dir DIR` | Deploy DIR to Cloudflare Pages with wrangler. |
 | `apscrap alert [--dry-run]` | Send the Telegram message, or print it. |
 | `apscrap commute-load FILE --slot a\|b` | Load a travel-time grid from `scripts/commute_grid.py` for one person. |
+| `apscrap sources [--only era,remax] [--force]` | Crawl RE/MAX, KW, ERA and Casa Sapo for the councils in Definições, then parse. `--force` lets Casa Sapo run outside the visit window its robots.txt asks for. |
 | `apscrap relist` | Match adverts that were withdrawn and posted again. |
+| `apscrap lifecycle` | Mark adverts that left their portal as gone, per portal (below). |
+| `apscrap dedup` | Link the same flat advertised on several portals, so it shows and counts once. |
 | `apscrap aggregates` | Refresh `market_agg_daily` and the app's `mv_deals`. |
 | `apscrap ine` | Import INE's parish medians (sales and new leases). |
 | `apscrap fuel` | Fetch DGEG's average fuel prices for the car costs. |
@@ -129,7 +133,7 @@ ad-hoc exploration on a laptop. Production does not run it.
 | `apscrap notify [--dry-run]` | Drops on saved items, saved-search matches, zone alerts. |
 | `apscrap diary [--force]` | Write this week's market diary (Mondays in `daily`). |
 | `apscrap serve` | Run the app. |
-| `apscrap daily` | The nightly sequence, for the targets in `cli.py`. |
+| `apscrap daily` | The nightly sequence for Imovirtual (targets in `cli.py`), then relist, lifecycle, dedup, aggregates and the app's read models for every portal. |
 | `apscrap stats` | What is in the warehouse right now. |
 
 ## Configuration
@@ -181,26 +185,62 @@ public repository.
 
 ## Sources
 
-| Portal | Status | Notes |
-|---|---|---|
-| Imovirtual | Implemented | Structured JSON in `__NEXT_DATA__`, no HTML parsing. ~7,000 rentals and ~20,000 sales in the district. Terms (19 Aug 2026, §2.7) allow personal use and forbid sharing aggregated data with third parties; this is a private app for two |
-| INE | Implemented | Official parish medians: sales (0012234) and new leases (0014696), quarterly, imported weekly |
-| Standvirtual | On demand | Cars. Its terms forbid repeated, systematic extraction, so a model is fetched only when someone follows it or presses Atualizar (at most weekly), and an advert only when someone pastes it |
-| DGEG | Implemented | National average fuel prices for the car costs |
-| Casa Sapo | Not yet | Responds to a plain request, needs an HTML parser |
-| Remax, ERA | Not yet | Agency-only inventory, smaller and heavily overlapping |
-| Idealista | Out of scope | Returns 403 even for `robots.txt`. Apply for their official API instead |
-| Supercasa | Out of scope | Same bot protection |
+| Portal | Status | How | Notes |
+|---|---|---|---|
+| Imovirtual | Nightly | Search pages, structured JSON in `__NEXT_DATA__`; detail pages for coordinates | ~7,000 rentals and ~20,000 sales in the district. Terms (19 Aug 2026, §2.7) allow personal use and forbid sharing aggregated data with third parties; this is a private app for two |
+| RE/MAX | Nightly, rentals | Listing sitemaps (allowed), then the detail page of new, changed (sitemap `lastmod`) or week-old adverts; the advert is base64 JSON in `__NEXT_DATA__` | ~760 rentals in Lisboa, Odivelas and Loures. Exact coordinates and publish date. `/api` is disallowed, so the search API is not used. Keeps some let flats online (`isSold`) |
+| KW | Nightly, rentals | Property sitemaps, then detail pages (Next.js flight data) | ~1,000 rentals in the sitemaps for the three councils, about 80% already let: KW keeps them online with `isRented`, which is the signal we use. Let adverts are not re-read |
+| ERA | Nightly, rentals | The search page's JSON API (allowed), plus a detail endpoint once per advert | ~130 in the three councils. Keeps let flats as "Já ERA" and reserved ones as "Reservado" |
+| Casa Sapo | Nightly, rentals | HTML search pages (allowed); every card carries a JSON-LD Offer with coordinates and the seller type | ~1,700 homes in the three councils, a third from private owners. Rate-limited hard: 45 s between pages, so about an hour. Only between 23:00 and 11:00 UTC, as its robots.txt asks |
+| INE | Weekly | JSON indicator API | Official parish medians: sales (0012234) and new leases (0014696) |
+| Standvirtual | On demand | Search pages for the models you follow | Cars. Its terms forbid repeated, systematic extraction, so a model is fetched only when someone follows it or presses Atualizar (at most weekly), and an advert only when someone pastes it |
+| DGEG | Weekly | | National average fuel prices for the car costs |
+| Idealista | No | | Bot protection (DataDome). The official API needs an application |
+| OLX, Supercasa, Century 21, CustoJusto | No | | OLX and Supercasa block plain requests (403, Cloudflare challenge); Century 21's robots.txt disallows its API and filtered search; CustoJusto's forbids automated access. About 500 OLX adverts reach us through Imovirtual anyway |
 
-Adding a source means writing one class with `search_url`, `search_payload` and
-`parse_search_items`, then registering it in `apscrap/sources/__init__.py`.
+The other portals crawl rentals only, for the councils in Definições
+(`property_criteria.councils`), and each owns its walk of the site:
+`crawl(ctx)` stores pages in `raw_pages`, `parse_page(kind, payload)` turns
+them into listings and snapshots. A new one is a class in `apscrap/sources/`
+registered in `__init__.py`. Council and parish names are brought to CAOP's
+(`apscrap/geo.py`): from the coordinates when the advert has them, using
+`site/geo/freguesias.geojson`, else from the portal's own wording.
+
+### Price changes, removals, the same flat twice
+
+- **Price changes.** Every live advert gets one snapshot a day (sitemap
+  portals carry yesterday's price over until the detail page says otherwise).
+  A change counts as a move from 1% for rent and 0.5% for sale; below that it
+  is a €5 nudge to climb the results or a platform's daily repricing.
+  Placeholder prices (Uniplaces posts €1 between tenants) never count.
+- **Removals.** `lifecycle.py` marks an advert gone once its portal has been
+  crawled cleanly for 60 hours without it, counting from that portal's newest
+  observation, so a failed crawl never empties the site. `gone_reason` says
+  why: `missing`, `relisted` (a newer advert reposts it, see `relist.py`),
+  `removed` (its page answers 404/410) or `rented` (ERA, KW and RE/MAX say so).
+  An advert that comes back is active again. The app lists what left in the
+  last 14 days and how long adverts last by how cheap they were.
+- **Mid-stay platforms.** Uniplaces, Spacest and UKIO let furnished flats by
+  the month at about 35 €/m² against 22. They are a third of Imovirtual's
+  rentals, so they are kept out of every median and deal score, and the app
+  shows them only when asked.
+- **The same flat on several portals.** `dedup.py` groups live adverts that
+  agree on type, typology, council, price (3%), area (5%) and place (400 m, or
+  the same parish), with tighter limits when the advertisers differ. The app
+  shows one card with "Também em" links, and medians count it once.
+- **A portal's first night.** Adverts already online the first time we crawl
+  a portal are not "new" (`is_backlog`), and their days on market stay unknown
+  unless the portal gives a publish date.
 
 ## Being a good citizen
 
-Three seconds between requests, one crawl a night, a random start inside a
-20-minute window, and only paths that `robots.txt` allows. A full pass is about
-600 search pages plus up to 500 detail pages, spread over an hour. The data is
-for one family's move, and there is no version of this that needs to go faster.
+Three seconds between requests (45 s on Casa Sapo), one crawl a night per
+portal, a random start inside a 20-minute window, and only paths that
+`robots.txt` allows, inside the visit hours it asks for. Imovirtual is about
+600 search pages plus 150 detail pages; the other portals add a few sitemaps,
+the detail pages of new and changed adverts, and Casa Sapo's 75 pages. The data
+is for one family's move, and there is no version of this that needs to go
+faster.
 
 ## Caveats worth knowing
 
@@ -211,7 +251,8 @@ for one family's move, and there is no version of this that needs to go faster.
   obvious typos and every aggregate excludes them. `is_junk` drops rooms, shops,
   plots, garages and sales posted as rentals, judged from the title.
 - `days_on_market` uses the portal's first-published date, which resets if an
-  agency deletes and relists.
+  agency deletes and relists (`relist.py` follows the chain). ERA, KW and Casa
+  Sapo give no publish date, so their days count from when we first saw them.
 - The deal score compares against a median of at least 8 neighbours. A listing
   in a quiet parish is compared with its council instead, and the site says so.
 

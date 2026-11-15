@@ -1,9 +1,13 @@
+import logging
 import time
+from dataclasses import dataclass, field
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from ..config import DELAY_SECONDS, TIMEOUT_SECONDS, USER_AGENT
+
+log = logging.getLogger(__name__)
 
 
 class Fetcher:
@@ -34,13 +38,79 @@ class Fetcher:
         retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
         reraise=True,
     )
-    def get(self, url: str) -> httpx.Response:
+    def get(self, url: str, **kw) -> httpx.Response:
         self._throttle()
-        resp = self.client.get(url)
+        resp = self.client.get(url, **kw)
         # Back off properly on rate limiting rather than hammering through it.
+        if resp.status_code in (429, 503):
+            resp.raise_for_status()
+        return resp
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=5, min=5, max=60),
+        retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+        reraise=True,
+    )
+    def post(self, url: str, **kw) -> httpx.Response:
+        self._throttle()
+        resp = self.client.post(url, **kw)
         if resp.status_code in (429, 503):
             resp.raise_for_status()
         return resp
 
     def close(self) -> None:
         self.client.close()
+
+
+@dataclass
+class CrawlContext:
+    """What a source's crawl() gets: a throttled client, the database, and
+    where to look. save() stores one page in raw_pages and commits, so a crash
+    halfway keeps everything fetched so far."""
+    fetcher: Fetcher
+    conn: object
+    run_id: int
+    source: str
+    councils: list[str]
+    detail_limit: int
+    pages: int = 0
+    items: int = 0
+    problems: list[str] = field(default_factory=list)
+
+    def save(self, kind: str, url: str, status: int, payload) -> int:
+        from ..db import save_raw_page
+        self.pages += 1
+        return save_raw_page(self.conn, self.run_id, self.source, kind, url, status, payload)
+
+    def problem(self, text: str) -> None:
+        """Something that makes tonight's crawl incomplete. The run is then
+        recorded as failed, so apscrap/lifecycle.py does not read a missing
+        advert as gone."""
+        log.warning("%s: %s", self.source, text)
+        self.problems.append(text)
+
+
+class Source:
+    """A portal other than Imovirtual. Each one decides how to walk its own
+    site in crawl(), and turns stored payloads into rows in parse_page().
+
+    parse_page(kind, payload) yields (listing, snapshot) pairs. listing holds
+    the listings columns it knows (source, external_id and url at least) plus
+    optional extras: latitude, longitude, description, extras, image_urls,
+    energy_cert, build_year, deposit_eur, source_updated_at and status
+    ('available', 'reserved' or 'rented'). snapshot holds price_eur,
+    price_per_sqm and title, or is None when the page only proves the advert
+    is still online (a sitemap), in which case the last known price carries
+    over to today."""
+    name = ""
+    # Seconds between requests to this portal.
+    delay = DELAY_SECONDS
+    # Transactions this source crawls. Rentals only: sales stay on Imovirtual.
+    transactions = ("rent",)
+
+    def crawl(self, ctx: CrawlContext) -> None:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def parse_page(self, kind: str, payload: dict):  # pragma: no cover - interface
+        raise NotImplementedError

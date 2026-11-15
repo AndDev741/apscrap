@@ -312,7 +312,9 @@ prose reads.
 | INE | Official medians by parish: sale €/m² every quarter, new-lease rent €/m² every half year | New. Pulled through INE's JSON indicator API, each release stored with its reference period |
 | Standvirtual | Car listings | New, after CA-0 |
 | Idealista | Listings the other portals lack | Apply for the official API. No scraping: the site blocks robots.txt itself |
-| Casa Sapo | A second property source | Later (LIMITATIONS.md, item 3) |
+| Casa Sapo | Rentals, a third from private owners | Done. Nightly, HTML search pages with JSON-LD, 45 s apart, inside the visit hours its robots.txt asks for |
+| RE/MAX, KW, ERA | Agency rentals, exact coordinates, a "let" flag (ERA, KW, RE/MAX) | Done. Nightly: RE/MAX and KW through their sitemaps and detail pages, ERA through its allowed JSON API |
+| OLX, Supercasa, Century 21, CustoJusto | | Not crawled: bot protection or robots.txt forbids it |
 | CAOP (DGT) | Parish polygons | New, static file refreshed once a year |
 | DGEG | Fuel prices | New, weekly |
 
@@ -448,7 +450,8 @@ done in production, and what still waits on someone:
 | DT-3, AC-1, AC-2, ST-1 | Done. `apscrap serve` in be-infra `apps/apscrap/web.yaml`, on apscrap.beyouweb.com in place of the old static site (which stays on apscrap.pages.dev). Access policy "Casa & Carro"; the second email joins it, and Definições, when it is known |
 | IM-1 | Done as a cartogram. 3- and 6-month changes appear once our own history covers them; until then the 12-month change is INE's and says so |
 | IM-2 | Done for rent and sale (`v_deals` now covers both) |
-| IM-3 | Done. `relist.py` matches reposted adverts; cards and detail show the chain and the days on market across it |
+| IM-3 | Done. `relist.py` matches reposted adverts; cards and detail show the chain and the days on market across it. `lifecycle.py` records when and why an advert left (missing, relisted, removed, let); Imóveis lists what left and how long adverts last by price band |
+| DT-1 (portals) | Done 2026-11-15. RE/MAX, KW, ERA and Casa Sapo crawled nightly by `apscrap sources` (be-infra CronJob `apscrap-sources`); `dedup.py` folds the same flat across portals; mid-stay platforms and sub-1% price changes kept out of medians and drop counts |
 | IM-4 | Done. Gross yield per parish, on the map panel and in the assistant |
 | IM-6 | Done. One grid per person and mode (transit and car), filters for both, isochrones on the map. Car times have no traffic model. The second person's grid uses an approximate point until the exact address is set in Definições and the grid is recomputed |
 | DU-1, DU-2, DU-3 | Done. Photos are resized on upload and stored in the database, so the nightly backup covers them |

@@ -82,10 +82,17 @@ def _where(f: dict, params: dict) -> list[str]:
     if f.get("drops_only"):
         w.append("m.n_drops > 0")
     if f.get("new_days"):
-        w.append("m.first_seen_at > now() - make_interval(days => %(new_days)s)")
+        w.append("m.first_seen_at > now() - make_interval(days => %(new_days)s) AND NOT m.is_backlog")
         params["new_days"] = int(f["new_days"])
     if not f.get("include_temporary", True):
         w.append("NOT m.is_temporary")
+    # Mid-stay platforms (Uniplaces, Spacest, UKIO) are a different product:
+    # furnished, by the month, about 50% dearer. Shown only when asked for.
+    if not f.get("include_midstay"):
+        w.append("NOT m.is_midstay")
+    if f.get("sources"):
+        w.append("(m.source = ANY(%(sources)s) OR EXISTS (SELECT 1 FROM jsonb_array_elements(m.also_on) x WHERE x->>'source' = ANY(%(sources)s)))")
+        params["sources"] = list(f["sources"])
     if f.get("ids"):
         w.append("m.id = ANY(%(ids)s)")
         params["ids"] = [int(i) for i in f["ids"]]
@@ -120,6 +127,7 @@ def search(f: dict, limit: int = 24, offset: int = 0, conn=None) -> dict:
                m.n_relists, m.root_id, m.first_seen_at, m.listed_at, m.is_temporary,
                m.is_private_owner, m.agency_name, m.geo_lat, m.geo_lon, m.geo_precision,
                m.floor, m.energy_cert, m.build_year, m.deposit_eur,
+               m.source, m.is_midstay, m.is_reserved, m.also_on,
                {commute} AS commute,
                {VOTES_SQL.format(id='m.id')} AS votes,
                EXISTS (SELECT 1 FROM shortlist s WHERE s.kind = 'listing' AND s.item_id = m.id
@@ -150,21 +158,35 @@ def search(f: dict, limit: int = 24, offset: int = 0, conn=None) -> dict:
 
 
 def facets(mode: str, councils: list[str], conn=None) -> dict:
-    """Zones and counts for the filter panel."""
+    """Zones and counts for the filter panel. Counts leave mid-stay flats out,
+    like the default search; `midstay` and `sources` say how many there are."""
     own = conn is None
     conn = conn or connect()
     try:
         rows = conn.execute(
             """SELECT council, parish, count(*) AS n FROM mv_deals
-                WHERE transaction_type = %s AND council = ANY(%s)
+                WHERE transaction_type = %s AND council = ANY(%s) AND NOT is_midstay
                 GROUP BY 1, 2 ORDER BY 1, 2""", (mode, councils)).fetchall()
         totals = conn.execute(
-            "SELECT transaction_type, count(*) AS n FROM mv_deals WHERE council = ANY(%s) GROUP BY 1",
+            """SELECT transaction_type, count(*) AS n FROM mv_deals
+                WHERE council = ANY(%s) AND NOT is_midstay GROUP BY 1""",
             (councils,)).fetchall()
+        midstay = conn.execute(
+            """SELECT count(*) AS n FROM mv_deals
+                WHERE transaction_type = %s AND council = ANY(%s) AND is_midstay""",
+            (mode, councils)).fetchone()["n"]
+        sources = conn.execute(
+            """SELECT s AS source, count(*) AS n
+                 FROM mv_deals m,
+                      LATERAL (SELECT m.source AS s
+                               UNION SELECT x->>'source' FROM jsonb_array_elements(m.also_on) x) src
+                WHERE m.transaction_type = %s AND m.council = ANY(%s) AND NOT m.is_midstay
+                GROUP BY 1 ORDER BY 2 DESC""", (mode, councils)).fetchall()
     finally:
         if own:
             conn.close()
-    return {"zones": rows, "totals": {r["transaction_type"]: r["n"] for r in totals}}
+    return {"zones": rows, "totals": {r["transaction_type"]: r["n"] for r in totals},
+            "midstay": midstay, "sources": {r["source"]: r["n"] for r in sources}}
 
 
 def detail(listing_id: int, conn=None) -> dict | None:
@@ -177,7 +199,7 @@ def detail(listing_id: int, conn=None) -> dict | None:
                        EXISTS (SELECT 1 FROM shortlist s WHERE s.kind = 'listing'
                                  AND s.item_id = l.id AND s.removed_at IS NULL) AS saved,
                        d.peer_level, d.peer_n, d.peer_med_ppm, d.peer_med_price, d.discount_pct,
-                       d.price_discount_pct, d.deal_score
+                       d.price_discount_pct, d.deal_score, COALESCE(d.also_on, '[]'::jsonb) AS also_on
                   FROM v_listing_current l
                   LEFT JOIN mv_deals d ON d.id = l.id
                  WHERE l.id = %s""", (listing_id,)).fetchone()

@@ -49,6 +49,9 @@ WITH base AS (
               ELSE false
           END
       AND NOT is_junk_title(s.title)
+      -- normal leases only, one copy per flat (sql/001: is_midstay, dup_of)
+      AND NOT is_midstay(l.agency_name, s.title)
+      AND l.dup_of IS NULL
 )
 SELECT day, council,
        CASE WHEN GROUPING(parish) = 1 THEN '' ELSE parish END,
@@ -71,9 +74,23 @@ ON CONFLICT (day, council, parish, transaction_type, property_type, typology) DO
 """
 
 
+# Bump when AGG_SQL changes what it counts, so the whole history is rebuilt
+# once with the new rule instead of switching rules mid-series.
+# 2: mid-stay platforms and cross-portal copies left out.
+AGG_VERSION = 2
+
+
 def refresh_aggregates(days: int = 3) -> dict:
-    """Recompute the last `days` days, or every day when the table is empty."""
+    """Recompute the last `days` days, or every day when the table is empty
+    or AGG_VERSION changed."""
+    from . import appsettings
     with connect() as conn:
+        stored = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'market_agg_version'").fetchone()
+        if not stored or stored["value"] != AGG_VERSION:
+            conn.execute("DELETE FROM market_agg_daily")
+            conn.commit()
+            appsettings.put("market_agg_version", AGG_VERSION, conn=conn)
         empty = conn.execute("SELECT NOT EXISTS (SELECT 1 FROM market_agg_daily) AS e").fetchone()["e"]
         span = conn.execute("SELECT min(observed_date) AS a, max(observed_date) AS b FROM listing_snapshots").fetchone()
         if span["b"] is None:
@@ -203,9 +220,9 @@ def zones(mode: str = "rent", councils: list[str] | None = None, typology: str |
     with connect() as conn:
         cur = conn.execute(
             f"""SELECT council, parish, transaction_type, price_per_sqm, days_on_market,
-                       chain_days_on_market, first_seen_at
+                       chain_days_on_market, first_seen_at, is_backlog
                   FROM mv_deals
-                 WHERE council = ANY(%(c)s) AND parish IS NOT NULL
+                 WHERE council = ANY(%(c)s) AND parish IS NOT NULL AND NOT is_midstay
                    AND property_type = %(pt)s {typ_filter}""",
             {"c": councils, "pt": property_type, "typ": typology},
         ).fetchall()
@@ -230,8 +247,9 @@ def zones(mode: str = "rent", councils: list[str] | None = None, typology: str |
         z = by_zone[(r["council"], r["parish"])]
         z[r["transaction_type"]].append(float(r["price_per_sqm"]))
         if r["transaction_type"] == mode:
-            z["dom"].append(r["chain_days_on_market"] or r["days_on_market"] or 0)
-            if r["first_seen_at"] and r["first_seen_at"] > week_ago:
+            if (r["chain_days_on_market"] or r["days_on_market"]) is not None:
+                z["dom"].append(r["chain_days_on_market"] or r["days_on_market"])
+            if r["first_seen_at"] and r["first_seen_at"] > week_ago and not r["is_backlog"]:
                 z["new7"] += 1
     series = defaultdict(list)
     for r in agg:
@@ -326,6 +344,7 @@ def council_medians(mode: str, councils: list[str], property_type: str = "flat")
             """SELECT council, count(*) AS n,
                       percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_sqm) AS ppm
                  FROM mv_deals WHERE transaction_type = %s AND council = ANY(%s) AND property_type = %s
+                  AND NOT is_midstay
                 GROUP BY council""", (mode, councils, property_type)).fetchall()
     return {r["council"]: {"n": r["n"], "median_ppm": round(float(r["ppm"]), 2)} for r in rows}
 
@@ -343,12 +362,12 @@ def events(mode: str, councils: list[str], shortlisted: set[int] | None = None, 
                       d.council, d.root_id
                  FROM v_price_changes c JOIN mv_deals d ON d.id = c.listing_id
                 WHERE c.direction = 'drop' AND c.changed_at > now() - interval '7 days'
-                  AND d.transaction_type = %s AND d.council = ANY(%s)
+                  AND d.transaction_type = %s AND d.council = ANY(%s) AND NOT d.is_midstay
                 ORDER BY c.changed_at DESC""", (mode, councils)).fetchall()
         fresh = conn.execute(
             """SELECT parish, council, typology, count(*) AS n
                  FROM mv_deals
-                WHERE transaction_type = %s AND council = ANY(%s)
+                WHERE transaction_type = %s AND council = ANY(%s) AND NOT is_midstay AND NOT is_backlog
                   AND first_seen_at > now() - interval '3 days' AND deal_score > 5
                 GROUP BY 1, 2, 3 HAVING count(*) >= 2
                 ORDER BY n DESC LIMIT 4""", (mode, councils)).fetchall()
@@ -392,3 +411,77 @@ def events(mode: str, councils: list[str], shortlisted: set[int] | None = None, 
 
 def fmt_eur(v) -> str:
     return f"{float(v):,.0f} €".replace(",", " ")
+
+
+# -- departures: what left the market and how fast (IM-3) ----------------------
+
+# Discount against the council median for the same type and typology on the
+# day the advert was last seen, in bands. Positive = cheaper.
+BANDS = [
+    ("muito abaixo", 15, None),
+    ("abaixo", 5, 15),
+    ("na mediana", -5, 5),
+    ("acima", -15, -5),
+    ("muito acima", None, -15),
+]
+
+DEPARTURES_SQL = """
+WITH g AS (
+    SELECT l.id, l.source, l.url, l.council, l.parish, l.typology, l.property_type,
+           l.transaction_type, l.area_sqm, l.thumbnail_url, l.gone_at, l.gone_reason,
+           l.agency_name, l.is_private_owner, s.price_eur, s.price_per_sqm, s.title,
+           CASE WHEN l.chain_first_seen IS NULL AND l.listed_at IS NULL
+                     AND l.first_seen_at < src.started + interval '36 hours' THEN NULL
+                ELSE EXTRACT(day FROM l.gone_at - COALESCE(l.chain_first_seen, l.listed_at, l.first_seen_at))::int
+           END AS days
+      FROM listings l
+      JOIN (SELECT source, min(first_seen_at) AS started FROM listings GROUP BY source) src
+        ON src.source = l.source
+      JOIN LATERAL (SELECT price_eur, price_per_sqm, title FROM listing_snapshots
+                     WHERE listing_id = l.id ORDER BY observed_at DESC LIMIT 1) s ON true
+     WHERE l.gone_at > now() - make_interval(days => %(window)s)
+       AND l.gone_reason IN ('missing', 'removed', 'rented')
+       AND l.transaction_type = %(mode)s AND l.council = ANY(%(c)s) AND l.dup_of IS NULL
+       AND l.area_sqm BETWEEN 10 AND 3000
+       AND is_plausible_price(l.transaction_type, s.price_eur)
+       AND NOT is_junk_title(s.title)
+       AND NOT is_midstay(l.agency_name, s.title)
+)
+SELECT g.*,
+       ROUND((1 - g.price_per_sqm / NULLIF(a.median_ppm, 0)) * 100, 1) AS discount_pct
+  FROM g
+  LEFT JOIN market_agg_daily a
+         ON a.day = (g.gone_at AT TIME ZONE 'Europe/Lisbon')::date
+        AND a.council = g.council AND a.parish = ''
+        AND a.transaction_type = g.transaction_type AND a.property_type = g.property_type
+        AND a.typology = COALESCE(g.typology, '')
+ ORDER BY g.gone_at DESC
+"""
+
+
+def departures(mode: str, councils: list[str], window: int = 90, recent_days: int = 14,
+               limit: int = 60) -> dict:
+    """Adverts that left in the last `window` days: the latest ones for the
+    "Saíram" list, and the median days on market by how cheap they were.
+    Relists are left out (the flat did not leave, it was posted again)."""
+    with connect() as conn:
+        rows = conn.execute(DEPARTURES_SQL, {"mode": mode, "c": councils, "window": window}).fetchall()
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=recent_days)
+    recent = [r for r in rows if r["gone_at"] >= cutoff][:limit]
+    bands = []
+    for label, lo, hi in BANDS:
+        days = [r["days"] for r in rows if r["discount_pct"] is not None and r["days"] is not None
+                and (lo is None or r["discount_pct"] >= lo) and (hi is None or r["discount_pct"] < hi)]
+        bands.append({"band": label, "from_pct": lo, "to_pct": hi, "n": len(days),
+                      "median_days": round(statistics.median(days)) if len(days) >= MIN_N else None})
+    reasons = defaultdict(int)
+    for r in rows:
+        reasons[r["gone_reason"]] += 1
+    return {"mode": mode, "window_days": window, "recent_days": recent_days,
+            "n": len(rows), "n_recent": sum(1 for r in rows if r["gone_at"] >= cutoff),
+            "reasons": dict(reasons), "bands": bands, "min_n": MIN_N,
+            "recent": [{k: r[k] for k in ("id", "source", "url", "council", "parish", "typology",
+                                         "property_type", "area_sqm", "thumbnail_url", "gone_at",
+                                         "gone_reason", "price_eur", "title", "days", "discount_pct",
+                                         "agency_name", "is_private_owner")}
+                       for r in recent]}

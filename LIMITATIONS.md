@@ -28,13 +28,23 @@ against those is the honest way to calibrate.
 **A listing disappearing does not mean it rented.** It might have rented, or the
 agency mandate lapsed, or the owner gave up, or it moved to Alojamento Local.
 So `days_on_market` really means days advertised, and a true absorption rate is
-not computable from this.
+not computable from this. ERA, KW and RE/MAX are the exception: they keep let
+flats online with a flag, and those leave with `gone_reason = 'rented'`. The
+rest leave as `missing`, 60 hours after their portal last showed them.
 
-**Duplicates inflate supply.** 2.7% of active adverts in the sample are the same
-flat posted more than once, sometimes by the same advertiser. The site folds
-exact copies (same parish, typology, area, price and title) into one card, but
-the SQL views still count each advert, and a copy with a reworded title or a
-different agency is not caught.
+**Duplicates are folded, not perfectly.** `dedup.py` links the same flat on two
+portals when price, area, place and typology agree, more strictly when the
+advertisers differ. Two identical flats in one building at the same price can
+still be merged, and a copy with a different area or a stale price is missed.
+Copies of one flat on the same portal at the same time are not caught at all.
+
+**Mid-stay platforms are a different market.** Uniplaces, Spacest and UKIO
+(furnished, by the month) are left out of every median by agency name, plus
+titles that say "média duração". A smaller platform with another name would
+slip through until it is added to `is_midstay()` in sql/001.
+
+**Price moves under 1% are ignored** (0.5% for sales). An agency that lowers
+the rent by €5 a week for a month moves it 2% without a single counted drop.
 
 **Bait listings exist.** Agencies post attractive adverts to harvest leads for
 properties that are not available. The fraction is unknown and unmeasurable from
@@ -45,10 +55,12 @@ combinations had three or four listings. A median over n=3 tells you very little
 Filter on `n_listings` before believing any cell, and prefer council level when
 the parish is quiet.
 
-**One portal, one slice of the market.** Imovirtual is OLX-owned and skews toward
-agency inventory. Private rentals that move through word of mouth, Facebook
-groups and university noticeboards never appear. Idealista-exclusive listings do
-not appear either, since that portal blocks scrapers.
+**Five portals, still a slice of the market.** Imovirtual skews toward agency
+inventory; Casa Sapo adds private owners, RE/MAX, ERA and KW their own stock.
+Private rentals that move through word of mouth, Facebook groups and university
+noticeboards never appear, and neither do Idealista-exclusive listings, since
+that portal blocks scrapers. The other portals are crawled for rentals in the
+councils in Definições only; sales stay Imovirtual-only.
 
 **Costs beyond the headline number are missing.** Condomínio fees, IMI, IMT and
 stamp duty on a purchase, agency commission, and how many months upfront a
@@ -93,7 +105,7 @@ always names its source so you can check.
 
 1. **Description parsing.** Condomínio, furnished, lease length and guarantor
    requirements are all sitting in detail pages already stored in `raw_pages`.
-2. **Fuzzy deduplication.** Address plus area plus typology, with a fuzzy pass
-   over the description, across agencies.
-3. **Casa Sapo as a second source**, to cut single-portal bias.
-4. **INE transaction data**, to calibrate asking against actual.
+2. **Description similarity in dedup.** Every portal but Imovirtual now stores
+   the description; comparing them would catch copies whose area or price
+   drifted.
+3. **Idealista's official API**, if the application is accepted.

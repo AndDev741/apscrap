@@ -101,7 +101,7 @@ def run(dry_run: bool = False) -> dict:
         new = conn.execute(
             f"""SELECT * FROM v_deals d
                  WHERE {where}
-                   AND first_seen_at > now() - interval '36 hours'
+                   AND first_seen_at > now() - interval '36 hours' AND NOT is_backlog
                    AND NOT EXISTS (SELECT 1 FROM alerts_sent a
                                     WHERE a.listing_id = d.id AND a.kind = 'new')
                  ORDER BY deal_score DESC NULLS LAST""",

@@ -7,7 +7,8 @@ configured in this repository except the image.
 | Piece | Where |
 |---|---|
 | Image | `ghcr.io/anddev741/apscrap`, built by `.github/workflows/image.yml` on every push to `main` |
-| Nightly job | be-infra `apps/apscrap/cronjob.yaml`, 04:20 Europe/Lisbon plus up to 20 minutes of jitter |
+| Nightly job | be-infra `apps/apscrap/cronjob.yaml`, 04:20 Europe/Lisbon plus up to 20 minutes of jitter: Imovirtual, then relist, lifecycle, dedup and the read models for every portal |
+| Other portals | be-infra `apps/apscrap/sources.yaml`, CronJob `apscrap-sources`, 00:30 Europe/Lisbon plus jitter: RE/MAX, KW, ERA, then Casa Sapo (its robots.txt asks for 23:00 to 11:00 UTC). Done well before 04:20, which picks up what it parsed |
 | Database | `apscrap` in the shared CloudNativePG cluster (be-infra `data/postgres.yaml`) |
 | Backup | be-infra `apps/apscrap/backup.yaml`, 06:10, restic, 7 daily / 4 weekly / 12 monthly |
 | Secrets | be-infra `apps/apscrap/secrets/*.sops.yaml`, encrypted with the cluster's age key |
@@ -81,6 +82,8 @@ kubectl -n apscrap logs job/<name>
 
 # run one now (the jitter still applies; up to 20 minutes before it starts)
 kubectl -n apscrap create job --from=cronjob/apscrap-daily apscrap-manual-$(date +%s)
+# the other portals (Casa Sapo skips itself outside 23:00-11:00 UTC)
+kubectl -n apscrap create job --from=cronjob/apscrap-sources apscrap-sources-$(date +%s)
 
 # what is in the warehouse
 kubectl -n data exec -it pg-1 -c postgres -- psql -d apscrap -c "SELECT count(*) FROM listings"

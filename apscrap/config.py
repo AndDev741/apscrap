@@ -39,3 +39,7 @@ DETAIL_LIMIT = int(os.getenv("APSCRAP_DETAIL_LIMIT", "150"))
 # tables keep the history; this only limits how far back a parser fix can
 # replay attribute changes. Detail pages are fetched once and kept forever.
 RAW_SEARCH_KEEP_DAYS = int(os.getenv("APSCRAP_RAW_KEEP_DAYS", "60"))
+
+# Detail pages per night for each of the other portals (RE/MAX, KW, ERA). The
+# first nights read the backlog; after that only new and changed adverts.
+SOURCES_DETAIL_LIMIT = int(os.getenv("APSCRAP_SOURCES_DETAIL_LIMIT", "400"))
