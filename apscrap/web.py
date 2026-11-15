@@ -9,8 +9,10 @@ aggregate tables, so nothing here is slow enough to need a cache.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import io
 import json
+import re
 import logging
 import threading
 from decimal import Decimal
@@ -18,7 +20,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from psycopg.types.json import Jsonb
 
@@ -612,11 +614,27 @@ def agent_conversation(conv: str, user=Depends(current_user)):
 
 # -- the site ------------------------------------------------------------------------------
 
+_ASSET = re.compile(r'(src|href)="([a-z]+\.(?:js|css))"')
+
+
+def _index_html() -> str:
+    """index.html with every local script and stylesheet versioned by the
+    content of the site's files. Cloudflare caches .js and .css at the edge and
+    in the browser, so without this a deploy keeps serving yesterday's code."""
+    site = Path(SITE_SRC)
+    digest = hashlib.sha1()
+    for f in sorted([*site.glob("*.js"), *site.glob("*.css")]):
+        digest.update(f.read_bytes())
+    version = digest.hexdigest()[:10]
+    html = (site / "index.html").read_text()
+    return _ASSET.sub(lambda m: f'{m.group(1)}="{m.group(2)}?v={version}"', html)
+
+
 @app.get("/")
 def index(request: Request):
     # The page itself is public to anyone Access lets through; the API checks
     # the user on every call.
-    return FileResponse(Path(SITE_SRC) / "index.html", headers={"Cache-Control": "no-cache"})
+    return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/", StaticFiles(directory=str(SITE_SRC)), name="site")
