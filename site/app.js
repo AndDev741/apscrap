@@ -346,7 +346,7 @@
         opts.votes ? App.votes("listing", r.id, r.votes) : null,
         h("div", { class: "foot" },
           h("span", { class: "xsmall muted" }, d !== null && d !== undefined ? App.days(d) + " no mercado" : "", " ", App.commuteChips(r.commute, true)),
-          h("a", { class: "btn dark", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Imovirtual", App.icon("out", 14)))));
+          h("a", { class: "btn dark", href: r.url, target: "_blank", rel: "noopener noreferrer" }, "Ver no Imovirtual", App.icon("out", 14)))));
   };
 
   /* Sparkline from [[date, value], ...]. */

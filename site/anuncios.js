@@ -9,6 +9,7 @@
   const EXTRAS = ["Garagem", "Elevador", "Varanda", "Mobilado"];
   const SORTS_IM = [["recent", "Mais recentes"], ["discount", "Maior desconto"], ["price_asc", "Preço mais baixo"], ["price_desc", "Preço mais alto"], ["ppm_asc", "€/m² mais baixo"], ["commute", "Mais perto do trabalho"], ["drops", "Mais baixas de preço"]];
   const SORTS_CAR = [["discount", "Maior desconto"], ["price_asc", "Preço mais baixo"], ["price_desc", "Preço mais alto"], ["km_asc", "Menos km"], ["recent", "Mais recente"], ["new", "Anunciados há menos tempo"]];
+  const BODY_LABEL = { citadino: "Citadino", utilitario: "Utilitário", carrinha: "Carrinha", suv: "SUV", monovolume: "Monovolume", sedan: "Sedan", coupe: "Coupé", cabrio: "Cabrio", outro: "Outro" };
   const CAR_TYPES = [["citadino", "Citadino"], ["suv", "SUV"], ["carrinha", "Carrinha"], ["eletrico", "Elétrico"]];
   const FUELS = [["", "Todos"], ["gasolina", "Gasolina"], ["gasoleo", "Gasóleo"], ["hibrido", "Híbrido"], ["hibrido_plugin", "Híbrido plug-in"], ["eletrico", "Elétrico"], ["gpl", "GPL"]];
 
@@ -120,10 +121,10 @@
         h("div", { class: "t" }, h("h3", null, h("a", { href: "#/carro/" + c.id }, c.title || c.model_label)), h("div", { class: "price" }, App.eur(c.price_eur))),
         h("div", { class: "small muted" }, [c.year, c.km !== null ? nf(c.km) + " km" : null, FUEL[c.fuel] || c.fuel, c.gearbox === "automatica" ? "Automático" : c.gearbox === "manual" ? "Manual" : null].filter(Boolean).join(" · ")),
         c.peer_med_price ? h("div", { class: "small muted" }, "Semelhantes: " + App.eur(c.peer_med_price) + " (n=" + c.peer_n + ")") : h("div", { class: "small muted" }, "Sem semelhantes suficientes para comparar"),
-        h("div", { class: "tags" }, [c.body_type, c.location].filter(Boolean).map((t) => h("span", null, t))),
+        h("div", { class: "tags" }, [BODY_LABEL[c.body_type] || c.body_type, c.location].filter(Boolean).map((t) => h("span", null, t))),
         h("div", { class: "foot" },
           h("span", { class: "xsmall muted" }, c.days_listed !== null && c.days_listed !== undefined ? App.days(c.days_listed) + " no mercado" : ""),
-          h("a", { class: "btn dark", href: c.url, target: "_blank", rel: "noopener noreferrer" }, "Standvirtual", App.icon("out", 14)))));
+          h("a", { class: "btn dark", href: c.url, target: "_blank", rel: "noopener noreferrer" }, "Ver no Standvirtual", App.icon("out", 14)))));
   };
 
   async function drawMap(container, f) {

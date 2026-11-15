@@ -331,3 +331,4 @@ table.compare td.best { background: var(--teal-soft); color: var(--teal-dark); f
 .filter-box:not([open]) > summary h2::after { content: " ▾"; font-size: 16px; color: var(--ink-2); }
 .filter-box[open] > * + * { margin-top: 0; }
 .filter-box:not([open]) { padding-top: 12px; padding-bottom: 12px; }
+.commute span { white-space: nowrap; }
