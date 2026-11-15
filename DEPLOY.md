@@ -57,6 +57,12 @@ Putting it on the internet takes three things in Cloudflare, once:
    # add it to apps/apscrap/kustomization.yaml, commit, push
    ```
 
+Moving a hostname off Cloudflare Pages: remove it from the Pages project's
+custom domains first, and only then repoint the DNS record. On 2026-11-15 the
+CNAME was switched while apscrap.beyouweb.com was still a Pages custom domain;
+Pages kept answering for it and Access did not apply, so the old site and its
+data.json were public for a few minutes until the record was reverted.
+
 The first email to sign in takes person A, the second person B. Names, the
 second email, workplaces and every search criterion live in the app's
 Definições page, in the database.
