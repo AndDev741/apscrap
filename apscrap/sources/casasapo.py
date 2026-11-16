@@ -106,37 +106,33 @@ class CasaSapo(Source):
         # means the scheduled one leaves Casa Sapo alone.
         recent = ctx.conn.execute(
             """SELECT max(started_at) AS t FROM crawl_runs
-                WHERE source = 'casasapo' AND status = 'ok' AND pages_fetched > 0
+                WHERE source = 'casasapo' AND status IN ('ok', 'incomplete') AND pages_fetched > 0
                   AND started_at > now() - make_interval(hours => %s)""", (MIN_HOURS_BETWEEN,)).fetchone()["t"]
         if recent and not force:
             log.info("casasapo: crawled at %s, less than %s h ago; skipping", recent, MIN_HOURS_BETWEEN)
             return
-        f = ctx.fetcher
+        retry_later = []          # (council, page, url) that failed on the first pass
         for council in ctx.councils:
             base = f"{BASE}/alugar-casas/{geo.slug(council)}/"
             n, total_pages, failed_in_a_row = 1, 1, 0
             while n <= min(total_pages, MAX_PAGES):
                 url = base if n == 1 else f"{base}?pn={n}"
-                try:
-                    resp = f.get(url)
-                    status, body = resp.status_code, resp.text
-                except httpx.HTTPStatusError as exc:     # still failing after the retries
-                    status, body = exc.response.status_code, ""
-                cards = parse_cards(body) if status == 200 else []
+                status, body, cards = self._page(ctx, url)
                 if status != 200 or (not cards and n == 1):
-                    ctx.save("search", url, status, None)
-                    ctx.problem(f"{url}: HTTP {status}, {len(cards)} cards")
-                    failed_in_a_row += 1
-                    # One bad page skips that page, not the rest of the
-                    # council; three in a row or a failed first page stop it.
-                    if n == 1 or failed_in_a_row >= 3:
+                    if n == 1 or failed_in_a_row >= 2:
+                        # Without page 1 there is no page count, and three in a
+                        # row is an outage, not a blip: the council is missing.
+                        ctx.save("search", url, status, None)
+                        ctx.problem(f"{council}: {url} HTTP {status}; stopped this council at page {n}")
                         break
+                    failed_in_a_row += 1
+                    retry_later.append((council, n, url))
                     n += 1
                     continue
                 failed_in_a_row = 0
                 total = None
                 if n == 1:
-                    m = _COUNT.search(resp.text)
+                    m = _COUNT.search(body)
                     if m:
                         total = int(re.sub(r"\D", "", html.unescape(m.group(1))) or 0)
                         total_pages = max(1, math.ceil(total / PAGE_SIZE))
@@ -146,13 +142,37 @@ class CasaSapo(Source):
                         # lifecycle.py read everything after it as gone.
                         log.warning("casasapo: no result count on %s", url)
                         total_pages = MAX_PAGES
-                ctx.save("search", url, 200, {"items": cards, "council": council, "page": n,
-                                              "total": total})
-                ctx.items += len(cards)
+                self._keep(ctx, url, cards, council, n, total)
                 log.info("casasapo %s page %s/%s", council, n, total_pages)
                 if not cards:
                     break
                 n += 1
+
+        # Second pass: the gateway's 504s come in bursts, and a page that
+        # failed three times in a row usually answers a few minutes later.
+        for council, n, url in retry_later:
+            status, body, cards = self._page(ctx, url)
+            if status == 200 and cards:
+                self._keep(ctx, url, cards, council, n, None)
+                log.info("casasapo %s page %s: read on the second pass", council, n)
+            else:
+                ctx.save("search", url, status, None)
+                ctx.page_failed(f"{url} HTTP {status}")
+
+    @staticmethod
+    def _page(ctx: CrawlContext, url: str) -> tuple[int, str, list[dict]]:
+        try:
+            resp = ctx.fetcher.get(url)
+            status, body = resp.status_code, resp.text
+        except httpx.HTTPStatusError as exc:     # still failing after the retries
+            status, body = exc.response.status_code, ""
+        return status, body, (parse_cards(body) if status == 200 else [])
+
+    @staticmethod
+    def _keep(ctx: CrawlContext, url: str, cards: list[dict], council: str, n: int, total) -> None:
+        ctx.save("search", url, 200, {"items": cards, "council": council, "page": n, "total": total})
+        ctx.items += len(cards)
+        ctx.pages_ok += 1
 
     # -- parsing ----------------------------------------------------------------
 

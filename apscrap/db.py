@@ -26,13 +26,16 @@ def start_run(conn, source: str, params: dict) -> int:
     return row["id"]
 
 
-def finish_run(conn, run_id: int, pages: int, items: int, error: str | None = None) -> None:
+def finish_run(conn, run_id: int, pages: int, items: int, error: str | None = None,
+               status: str | None = None) -> None:
+    """status: 'ok', 'incomplete' (some pages failed, most answered) or
+    'failed'; by default failed when there is an error."""
     conn.execute(
         """UPDATE crawl_runs
               SET finished_at = now(), pages_fetched = %s, items_seen = %s,
                   status = %s, error = %s
             WHERE id = %s""",
-        (pages, items, "failed" if error else "ok", error, run_id),
+        (pages, items, status or ("failed" if error else "ok"), error, run_id),
     )
     conn.commit()
 

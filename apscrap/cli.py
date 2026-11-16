@@ -258,8 +258,12 @@ def _sources(args) -> int:
             kw = {"force": True} if (name == "casasapo" and args.force) else {}
             result = fetch.crawl_source(name, councils, args.detail_limit, **kw)
             print(f"crawl {name}: {result}")
-            if result.get("error"):
+            # "incomplete" (a few pages failed even on a second pass) keeps the
+            # Job green: lifecycle.py copes, and Grafana is for real outages.
+            if result.get("status") == "failed":
                 failed.append(name)
+            elif result.get("status") == "incomplete":
+                logging.warning("%s incomplete: %s", name, result.get("error"))
         except Exception:  # noqa: BLE001 - recorded, and the job still exits non-zero
             logging.exception("crawl %s failed", name)
             failed.append(name)

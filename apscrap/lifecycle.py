@@ -19,19 +19,29 @@ log = logging.getLogger(__name__)
 # Hours since the portal's newest observation before a missing advert counts as
 # gone. 60 h tolerates two missed nights, which is what the views used to
 # allow (three days) and keeps the false "gone" rate under 2%.
-GRACE_HOURS = {"imovirtual": 60, "remax": 60, "era": 60, "kw": 60, "casasapo": 60}
+# Casa Sapo gets three missed nights: its gateway drops a few pages most
+# nights (runs marked "incomplete"), and a live advert on a lost page shows up
+# again the next night.
+GRACE_HOURS = {"imovirtual": 60, "remax": 60, "era": 60, "kw": 60, "casasapo": 84}
 DEFAULT_GRACE_HOURS = 60
 
 
 def _healthy_sources(conn) -> dict[str, bool]:
-    """Sources with a search crawl in the last 30 hours, and whether all of
-    those crawls finished cleanly."""
+    """Sources crawled in the last 30 hours, and whether their latest night
+    (every search run within 6 hours of the newest, so Imovirtual's three
+    targets count together) finished cleanly or nearly so: 'incomplete' means
+    most pages answered and the grace period covers the rest. An older failed
+    run, say one started by hand that morning, does not count against it."""
     rows = conn.execute(
-        """SELECT source, bool_and(status = 'ok') AS ok
-             FROM crawl_runs
-            WHERE started_at > now() - interval '30 hours'
-              AND COALESCE(params->>'kind', 'search') = 'search'
-            GROUP BY source"""
+        """WITH r AS (
+               SELECT source, started_at, status FROM crawl_runs
+                WHERE started_at > now() - interval '30 hours'
+                  AND COALESCE(params->>'kind', 'search') = 'search'),
+           latest AS (SELECT source, max(started_at) AS t FROM r GROUP BY source)
+           SELECT r.source, bool_and(r.status IN ('ok', 'incomplete')) AS ok
+             FROM r JOIN latest l ON l.source = r.source
+            WHERE r.started_at > l.t - interval '6 hours'
+            GROUP BY r.source"""
     ).fetchall()
     return {r["source"]: r["ok"] for r in rows}
 

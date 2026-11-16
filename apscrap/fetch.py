@@ -140,20 +140,20 @@ def crawl_source(source_name: str, councils: list[str], detail_limit: int, **kw)
     lifecycle step leaves that portal's adverts alone tonight."""
     source = SOURCES[source_name]
     fetcher = Fetcher(delay=source.delay)
-    error = None
+    error, status = None, None
     with connect() as conn:
         run_id = start_run(conn, source_name, {"councils": councils, "detail_limit": detail_limit})
         ctx = CrawlContext(fetcher=fetcher, conn=conn, run_id=run_id, source=source_name,
                            councils=councils, detail_limit=detail_limit)
         try:
             source.crawl(ctx, **kw)
-            if ctx.problems:
-                error = "; ".join(ctx.problems)[:1000]
+            status, error = ctx.status()
         except Exception as exc:  # noqa: BLE001 - recorded on the run, then re-raised
             conn.rollback()
-            error = f"{type(exc).__name__}: {exc}"
+            status, error = "failed", f"{type(exc).__name__}: {exc}"
             raise
         finally:
-            finish_run(conn, run_id, ctx.pages, ctx.items, error)
+            finish_run(conn, run_id, ctx.pages, ctx.items, error, status)
             fetcher.close()
-    return {"run_id": run_id, "pages": ctx.pages, "items": ctx.items, **({"error": error} if error else {})}
+    return {"run_id": run_id, "pages": ctx.pages, "items": ctx.items, "status": status,
+            **({"error": error} if error else {})}
