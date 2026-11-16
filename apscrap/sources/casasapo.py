@@ -19,6 +19,8 @@ import logging
 import math
 import re
 
+import httpx
+
 from .. import geo
 from .base import CrawlContext, Source
 from .common import extras_from_text, money, number, per_sqm, property_type, text, typology
@@ -112,15 +114,26 @@ class CasaSapo(Source):
         f = ctx.fetcher
         for council in ctx.councils:
             base = f"{BASE}/alugar-casas/{geo.slug(council)}/"
-            n, total_pages = 1, 1
+            n, total_pages, failed_in_a_row = 1, 1, 0
             while n <= min(total_pages, MAX_PAGES):
                 url = base if n == 1 else f"{base}?pn={n}"
-                resp = f.get(url)
-                cards = parse_cards(resp.text) if resp.status_code == 200 else []
-                if resp.status_code != 200 or (not cards and n == 1):
-                    ctx.save("search", url, resp.status_code, None)
-                    ctx.problem(f"{url}: HTTP {resp.status_code}, {len(cards)} cards")
-                    break
+                try:
+                    resp = f.get(url)
+                    status, body = resp.status_code, resp.text
+                except httpx.HTTPStatusError as exc:     # still failing after the retries
+                    status, body = exc.response.status_code, ""
+                cards = parse_cards(body) if status == 200 else []
+                if status != 200 or (not cards and n == 1):
+                    ctx.save("search", url, status, None)
+                    ctx.problem(f"{url}: HTTP {status}, {len(cards)} cards")
+                    failed_in_a_row += 1
+                    # One bad page skips that page, not the rest of the
+                    # council; three in a row or a failed first page stop it.
+                    if n == 1 or failed_in_a_row >= 3:
+                        break
+                    n += 1
+                    continue
+                failed_in_a_row = 0
                 total = None
                 if n == 1:
                     m = _COUNT.search(resp.text)

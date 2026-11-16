@@ -9,6 +9,10 @@ from ..config import DELAY_SECONDS, TIMEOUT_SECONDS, USER_AGENT
 
 log = logging.getLogger(__name__)
 
+# Answers worth a second try: rate limiting and a proxy in front of the portal
+# timing out (Casa Sapo answered one 504 mid-crawl on 2026-11-16).
+RETRY_STATUS = (429, 500, 502, 503, 504)
+
 
 class Fetcher:
     """One client per crawl, with a hard floor on the gap between requests."""
@@ -41,8 +45,9 @@ class Fetcher:
     def get(self, url: str, **kw) -> httpx.Response:
         self._throttle()
         resp = self.client.get(url, **kw)
-        # Back off properly on rate limiting rather than hammering through it.
-        if resp.status_code in (429, 503):
+        # Back off properly on rate limiting and gateway blips rather than
+        # hammering through them; each retry still waits the full delay.
+        if resp.status_code in RETRY_STATUS:
             resp.raise_for_status()
         return resp
 
@@ -55,7 +60,7 @@ class Fetcher:
     def post(self, url: str, **kw) -> httpx.Response:
         self._throttle()
         resp = self.client.post(url, **kw)
-        if resp.status_code in (429, 503):
+        if resp.status_code in RETRY_STATUS:
             resp.raise_for_status()
         return resp
 
