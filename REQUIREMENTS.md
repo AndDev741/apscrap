@@ -448,14 +448,14 @@ done in production, and what still waits on someone:
 | CA-0 | Done. Imovirtual: personal use allowed, sharing aggregated data with third parties forbidden (§2.7, 19 Aug 2026); the app is private to two people. Standvirtual: repeated, systematic extraction forbidden (4 May 2026) and database rights claimed, so cars are fetched on demand only. Recorded in the README's Sources table |
 | DT-1, DT-2 | Done. INE sales (0012234) and new leases (0014696) by parish, imported weekly; `market_agg_daily` backfilled from every snapshot and refreshed nightly |
 | DT-3, AC-1, AC-2, ST-1 | Done. `apscrap serve` in be-infra `apps/apscrap/web.yaml`, on apscrap.beyouweb.com in place of the old static site (which stays on apscrap.pages.dev). Access policy "Casa & Carro"; the second email joins it, and Definições, when it is known |
-| IM-1 | Done as a cartogram. 3- and 6-month changes appear once our own history covers them; until then the 12-month change is INE's and says so |
+| IM-1 | Done, as IM-1 specifies: a cartogram and, since 2026-11-15, a geographic map (CAOP outlines) behind a Mosaico/Mapa toggle. The 3- and 6-month changes switch on by themselves when our own history reaches 90 and 180 days (from about 2027-01-30 and 2027-04-30); until then the 12-month change is INE's and says so, which is the behaviour IM-1 asks for |
 | IM-2 | Done for rent and sale (`v_deals` now covers both) |
 | IM-3 | Done. `relist.py` matches reposted adverts; cards and detail show the chain and the days on market across it. `lifecycle.py` records when and why an advert left (missing, relisted, removed, let); Imóveis lists what left and how long adverts last by price band |
 | DT-1 (portals) | Done 2026-11-15. RE/MAX, KW, ERA and Casa Sapo crawled nightly by `apscrap sources` (be-infra CronJob `apscrap-sources`); `dedup.py` folds the same flat across portals; mid-stay platforms and sub-1% price changes kept out of medians and drop counts |
 | IM-4 | Done. Gross yield per parish, on the map panel and in the assistant |
 | IM-6 | Done. One grid per person and mode (transit and car), filters for both, isochrones on the map. Car times have no traffic model. The second person's grid uses an approximate point until the exact address is set in Definições and the grid is recomputed |
 | DU-1, DU-2, DU-3 | Done. Photos are resized on upload and stored in the database, so the nightly backup covers them |
-| DU-4 | Done in code: shortlist drops, saved searches, zone alerts. Telegram delivery needs `TELEGRAM_BOT_TOKEN` in production, which has never been set; until then everything shows in the app's diary feed |
+| DU-4 | Done: shortlist drops, saved searches and zone alerts run every night (`apscrap notify`) and show in the app's diary feed. Telegram delivery is off by decision: on 2026-11-15 André said they do not want Telegram for now. The code is ready and switches on with an `apscrap-telegram` secret (TELEGRAM_BOT_TOKEN, chat ids in Definições) |
 | DU-5 | Done. Written on Mondays by the nightly job, with prose from the assistant around the SQL facts |
 | AG-1 to AG-4 | Done. OmniRoute (the beyou combo), read-only tools, role `apscrap_readonly`, monthly cap in euros |
 | AG-5 | Done: `scripts/agent_eval.py`, 21 questions checked against SQL. First run 16/21; after the fixes it records, 21/21 (about 0.92 € of tokens per run) |
