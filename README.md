@@ -214,8 +214,10 @@ registered in `__init__.py`. Council and parish names are brought to CAOP's
   is a €5 nudge to climb the results or a platform's daily repricing.
   Placeholder prices (Uniplaces posts €1 between tenants) never count.
 - **Removals.** `lifecycle.py` marks an advert gone once its portal has been
-  crawled cleanly for 60 hours without it, counting from that portal's newest
-  observation, so a failed crawl never empties the site. `gone_reason` says
+  crawled for 60 hours without it (84 for Casa Sapo), counting from that
+  portal's newest observation, so a failed crawl never empties the site. A
+  night where a few pages failed even on a second pass is recorded as
+  `incomplete` and still counts; a failed one does not. `gone_reason` says
   why: `missing`, `relisted` (a newer advert reposts it, see `relist.py`),
   `removed` (its page answers 404/410) or `rented` (ERA, KW and RE/MAX say so).
   An advert that comes back is active again. The app lists what left in the
