@@ -7,9 +7,9 @@ type), so no detail page is read. 25 cards a page.
 
 The portal rate-limits hard (429 after five pages in 76 s) and asks robots to
 visit between 23:00 and 11:00 UTC, so pages are 45 s apart and the crawl
-refuses to start outside that window. A search serves only about 1,360
-results whatever it counts, so a council above that (Lisboa, 1,639) is
-crawled parish by parish. Three councils are about 80 pages, an hour.
+refuses to start outside that window. The count in a search's heading runs
+about 20% ahead of what it serves, so paging stops at the first empty page.
+Three councils are about 63 pages, under an hour.
 Removed adverts answer 410.
 """
 from __future__ import annotations
@@ -32,10 +32,10 @@ log = logging.getLogger(__name__)
 BASE = "https://casa.sapo.pt"
 PAGE_SIZE = 25
 MAX_PAGES = 120
-# Casa Sapo serves about 1,360 results per search however many it counts
-# (Lisboa: 1,639 counted, page 55 half full, page 56 empty on 2026-11-16).
-# A council counted above this is crawled parish by parish instead.
-RESULT_CAP = 1300
+# The count in a search's heading runs ahead of what it serves: on 2026-11-16
+# Lisboa said 1,626 to 1,639 and served 1,356, and walking its 24 parishes
+# one by one found the same adverts. So a search ends at its first empty page,
+# not at the heading's page count.
 VISIT_HOURS_UTC = (23, 11)     # robots.txt: Visit-time: 2300-1100
 MIN_HOURS_BETWEEN = 12
 
@@ -119,22 +119,7 @@ class CasaSapo(Source):
             return
         retry_later = []          # (council, page, url) that failed on the first pass
         for council in ctx.councils:
-            base = f"{BASE}/alugar-casas/{geo.slug(council)}/"
-            first = self._walk(ctx, council, base, retry_later)
-            if first and first["total"] and first["total"] > RESULT_CAP:
-                parishes = self._parish_urls(first["html"], council)
-                log.info("casasapo %s: %s counted, over the %s the site serves; by parish (%s)",
-                         council, first["total"], RESULT_CAP, len(parishes))
-                if not parishes:
-                    ctx.problem(f"{council}: {first['total']} results, more than the site serves, "
-                                "and no parish links to split by")
-                    continue
-                counted = 0
-                for url in parishes:
-                    got = self._walk(ctx, council, url, retry_later)
-                    counted += (got or {}).get("total") or 0
-                if counted < first["total"] * 0.95:
-                    ctx.problem(f"{council}: parishes add up to {counted} of {first['total']}")
+            self._walk(ctx, council, f"{BASE}/alugar-casas/{geo.slug(council)}/", retry_later)
 
         # Second pass: the gateway's 504s come in bursts, and a page that
         # failed three times in a row usually answers a few minutes later.
@@ -148,9 +133,8 @@ class CasaSapo(Source):
                 ctx.page_failed(f"{url} HTTP {status}")
 
     def _walk(self, ctx: CrawlContext, council: str, base: str, retry_later: list) -> dict | None:
-        """Every page of one search. Returns its first page (count and HTML),
-        or None when page 1 failed. A council over RESULT_CAP is walked only up
-        to page 1 here and then again by parish."""
+        """Every page of one search, until the first empty one. Returns the
+        heading's count, or None when page 1 failed."""
         n, total_pages, failed_in_a_row, first = 1, 1, 0, None
         while n <= min(total_pages, MAX_PAGES):
             url = base if n == 1 else f"{base}?pn={n}"
@@ -179,28 +163,13 @@ class CasaSapo(Source):
                     # read everything after it as gone.
                     log.warning("casasapo: no result count on %s", url)
                     total_pages = MAX_PAGES
-                first = {"total": total, "html": body}
-                if total and total > RESULT_CAP and base.rstrip("/").count("/") == 4:
-                    # A whole council over the cap: keep page 1, the parishes
-                    # cover the rest.
-                    self._keep(ctx, url, cards, council, n, total)
-                    return first
+                first = {"total": total}
             self._keep(ctx, url, cards, council, n, total)
             log.info("casasapo %s page %s/%s (%s)", council, n, total_pages, url.split(".pt")[-1])
             if not cards:
                 break
             n += 1
         return first
-
-    @staticmethod
-    def _parish_urls(page: str, council: str) -> list[str]:
-        """Search URLs of the council's parishes, from the links on its first
-        page that name a CAOP parish ("/alugar-casas/lisboa/avenidas-novas/")."""
-        c = geo.slug(council)
-        names = {geo.slug(p["parish"]) for p in geo._parishes() if p["council"] == council}
-        slugs = sorted({s for s in re.findall(r'href="/alugar-(?:casas|apartamentos|moradias)/' + re.escape(c)
-                                              + r'/([a-z0-9-]+)/"', page) if s in names})
-        return [f"{BASE}/alugar-casas/{c}/{s}/" for s in slugs]
 
     @staticmethod
     def _page(ctx: CrawlContext, url: str) -> tuple[int, str, list[dict]]:

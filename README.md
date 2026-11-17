@@ -191,7 +191,7 @@ public repository.
 | RE/MAX | Nightly, rentals | Listing sitemaps (allowed), then the detail page of new, changed (sitemap `lastmod`) or week-old adverts; the advert is base64 JSON in `__NEXT_DATA__` | ~760 rentals in Lisboa, Odivelas and Loures. Exact coordinates and publish date. `/api` is disallowed, so the search API is not used. Keeps some let flats online (`isSold`) |
 | KW | Nightly, rentals | Property sitemaps, then detail pages (Next.js flight data) | ~1,000 rentals in the sitemaps for the three councils, about 80% already let: KW keeps them online with `isRented`, which is the signal we use. Let adverts are not re-read |
 | ERA | Nightly, rentals | The search page's JSON API (allowed), plus a detail endpoint once per advert | ~130 in the three councils. Keeps let flats as "Já ERA" and reserved ones as "Reservado" |
-| Casa Sapo | Nightly, rentals | HTML search pages (allowed); every card carries a JSON-LD Offer with coordinates and the seller type | ~1,700 homes in the three councils, a third from private owners. Rate-limited hard: 45 s between pages, so about an hour. Only between 23:00 and 11:00 UTC, as its robots.txt asks |
+| Casa Sapo | Nightly, rentals | HTML search pages (allowed); every card carries a JSON-LD Offer with coordinates and the seller type | ~1,500 homes in the three councils (its headings count about 20% more than it serves), a quarter from private owners. Rate-limited hard and its gateway drops requests now and then: 45 s between pages, retries and a second pass, so about an hour. Only between 23:00 and 11:00 UTC, as its robots.txt asks |
 | INE | Weekly | JSON indicator API | Official parish medians: sales (0012234) and new leases (0014696) |
 | Standvirtual | On demand | Search pages for the models you follow | Cars. Its terms forbid repeated, systematic extraction, so a model is fetched only when someone follows it or presses Atualizar (at most weekly), and an advert only when someone pastes it |
 | DGEG | Weekly | | National average fuel prices for the car costs |
@@ -240,7 +240,7 @@ Three seconds between requests (45 s on Casa Sapo), one crawl a night per
 portal, a random start inside a 20-minute window, and only paths that
 `robots.txt` allows, inside the visit hours it asks for. Imovirtual is about
 600 search pages plus 150 detail pages; the other portals add a few sitemaps,
-the detail pages of new and changed adverts, and Casa Sapo's 75 pages. The data
+the detail pages of new and changed adverts, and Casa Sapo's 63 pages. The data
 is for one family's move, and there is no version of this that needs to go
 faster.
 
