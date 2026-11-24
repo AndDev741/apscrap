@@ -13,9 +13,8 @@ configured in this repository except the image.
 | Backup | be-infra `apps/apscrap/backup.yaml`, 06:10, restic, 7 daily / 4 weekly / 12 monthly |
 | Secrets | be-infra `apps/apscrap/secrets/*.sops.yaml`, encrypted with the cluster's age key |
 | App | be-infra `apps/apscrap/web.yaml`: Deployment `apscrap-web` (`apscrap serve`), Ingress `apscrap.beyouweb.com`, behind Cloudflare Access |
-| Old site | Cloudflare Pages project `apscrap`, now only on apscrap.pages.dev, behind the same Access application, read-only fallback |
 | Assistant | OmniRoute, the same combo beyou uses (`apscrap-llm` secret); SQL as role `apscrap_readonly` (CNPG, `data/postgres.yaml`) |
-| Failure alert | Grafana's "Pod stuck" rule emails when the Job's pod stays Failed for 10 minutes |
+| Failure alert | Grafana's "CronJob failed" rule emails when a CronJob's last run ended without success, and clears itself once the next run succeeds. Failed Job pods stay behind for their logs (three per CronJob); "Pod stuck" ignores them |
 
 ## Shipping a change
 
@@ -57,12 +56,6 @@ Putting it on the internet takes three things in Cloudflare, once:
    sops -e -i apps/apscrap/secrets/apscrap-access.sops.yaml
    # add it to apps/apscrap/kustomization.yaml, commit, push
    ```
-
-Moving a hostname off Cloudflare Pages: remove it from the Pages project's
-custom domains first, and only then repoint the DNS record. On 2026-11-15 the
-CNAME was switched while apscrap.beyouweb.com was still a Pages custom domain;
-Pages kept answering for it and Access did not apply, so the old site and its
-data.json were public for a few minutes until the record was reverted.
 
 The first email to sign in takes person A, the second person B. Names, the
 second email, workplaces and every search criterion live in the app's

@@ -16,7 +16,7 @@ parts. So in this module:
 Every request goes through one Fetcher shared by the whole process (3 s gap,
 fixed user agent), one request at a time, and is checked against robots.txt
 before it is sent. Nothing goes to raw_pages or
-crawl_runs: parse.py replays raw_pages through SOURCES, and export.py reads
+crawl_runs: parse.py replays raw_pages through SOURCES, and the app reads
 the newest crawl_runs row as the last nightly property crawl.
 """
 from __future__ import annotations

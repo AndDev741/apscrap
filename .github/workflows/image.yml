@@ -21,7 +21,6 @@ jobs:
       - name: Syntax check
         run: |
           python3 -m compileall -q apscrap scripts
-          node --check site_legacy/app.js
           for f in site/*.js; do node --check "$f"; done
 
       - name: Build
@@ -31,7 +30,6 @@ jobs:
         run: |
           docker run --rm "$IMAGE:latest" apscrap --help >/dev/null
           docker run --rm "$IMAGE:latest" python -c "import apscrap.web, apscrap.agent, apscrap.carsapi"
-          docker run --rm "$IMAGE:latest" wrangler --version
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

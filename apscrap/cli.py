@@ -3,7 +3,7 @@ import datetime
 import logging
 import sys
 
-from . import alert, commute, db, export, fetch, parse
+from . import alert, commute, db, fetch, parse
 from .config import DETAIL_LIMIT, RAW_SEARCH_KEEP_DAYS, SOURCES_DETAIL_LIMIT
 
 # Where you might actually move. Edit this list, it drives the daily run.
@@ -60,12 +60,6 @@ def main(argv=None) -> int:
     sub.add_parser("dedup", help="link the same flat advertised on several portals")
 
     sub.add_parser("prune", help="delete parsed raw search pages past their retention")
-
-    e = sub.add_parser("export", help="build the static site into a directory")
-    e.add_argument("--out", required=True)
-
-    pb = sub.add_parser("publish", help="deploy a built site to Cloudflare Pages")
-    pb.add_argument("--dir", required=True)
 
     a = sub.add_parser("alert", help="send new and cheaper listings to Telegram")
     a.add_argument("--dry-run", action="store_true", help="print the message instead of sending it")
@@ -127,12 +121,6 @@ def main(argv=None) -> int:
 
     elif args.cmd == "prune":
         print(db.prune_raw_search(RAW_SEARCH_KEEP_DAYS))
-
-    elif args.cmd == "export":
-        print(export.build(args.out))
-
-    elif args.cmd == "publish":
-        export.publish(args.dir)
 
     elif args.cmd == "alert":
         print(alert.run(dry_run=args.dry_run))
@@ -221,14 +209,6 @@ def _daily(args) -> int:
     step("ine", _ine)
     step("fuel", _fuel)
     step("carcost tables", carcost.check_tables)
-
-    if export.configured():
-        site = export.site_dir()
-        step("export", lambda: export.build(site))
-        if "export" not in failed:
-            step("publish", lambda: export.publish(site))
-    else:
-        logging.info("Cloudflare not configured, skipping the site")
 
     if alert.configured():
         step("alert", alert.run)

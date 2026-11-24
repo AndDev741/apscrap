@@ -61,16 +61,14 @@ imovirtual.com                           remax.pt, kwportugal.pt, era.pt, casa.s
                                      |
                        +-------------+-------------+
                        v                           v
-                 export.py                    alert.py, notify.py
-      site_legacy/ + data.json           Telegram messages
-   -> apscrap.pages.dev (old site)
-                                     |
-   relist.py, lifecycle.py (gone), dedup.py (same flat, two portals),
-            market.py (aggregates, mv_deals), ine.py
-                                     |
-                                     v
-                       apscrap serve (web.py): site/ + /api
-                       apscrap.beyouweb.com behind Cloudflare Access
+    relist.py, lifecycle.py (gone),        alert.py, notify.py
+    dedup.py (same flat, two portals),     Telegram messages
+    market.py (aggregates, mv_deals),
+    ine.py
+                       |
+                       v
+    apscrap serve (web.py): site/ + /api
+    apscrap.beyouweb.com behind Cloudflare Access
 ```
 
 The database is the `apscrap` database in the shared CloudNativePG cluster on
@@ -93,7 +91,6 @@ python3 -m venv .venv && .venv/bin/pip install -e .
 .venv/bin/apscrap migrate
 .venv/bin/apscrap crawl --transaction rent --location lisboa --max-pages 5
 .venv/bin/apscrap parse
-.venv/bin/apscrap export --out /tmp/site && python3 -m http.server -d /tmp/site 8000
 ```
 
 The app is plain HTML, CSS and JS in `site/` served by `apscrap serve`, with no
@@ -102,9 +99,6 @@ build step. Locally, skip Cloudflare Access with a trusted email:
 ```bash
 APSCRAP_DEV_USER=you@example.com .venv/bin/apscrap serve --port 8080
 ```
-
-`site_legacy/` is the old static site that `export` publishes to Cloudflare
-Pages with a fresh `data.json`, kept as a read-only fallback.
 
 Metabase is still in `docker-compose.yml` with `scripts/setup_metabase.py` for
 ad-hoc exploration on a laptop. Production does not run it.
@@ -118,8 +112,6 @@ ad-hoc exploration on a laptop. Production does not run it.
 | `apscrap details --limit 150` | Fetch detail pages for listings never enriched, rentals first. Adds coordinates. |
 | `apscrap parse` | Drain `raw_pages` into `listings` and `listing_snapshots`. |
 | `apscrap prune` | Delete parsed search pages older than `APSCRAP_RAW_KEEP_DAYS` (60). |
-| `apscrap export --out DIR` | Build the static site into DIR. |
-| `apscrap publish --dir DIR` | Deploy DIR to Cloudflare Pages with wrangler. |
 | `apscrap alert [--dry-run]` | Send the Telegram message, or print it. |
 | `apscrap commute-load FILE --slot a\|b` | Load a travel-time grid from `scripts/commute_grid.py` for one person. |
 | `apscrap sources [--only era,remax] [--force]` | Crawl RE/MAX, KW, ERA and Casa Sapo for the councils in Definições, then parse. `--force` lets Casa Sapo run outside the visit window its robots.txt asks for. |
@@ -146,8 +138,6 @@ Environment variables, all optional except the database:
 | `APSCRAP_DELAY` | 3.0 | Seconds between requests |
 | `APSCRAP_DETAIL_LIMIT` | 150 | Detail pages per night |
 | `APSCRAP_RAW_KEEP_DAYS` | 60 | Search-page retention |
-| `CLOUDFLARE_API_TOKEN` `CLOUDFLARE_ACCOUNT_ID` | | Turns on publishing. Token scope: Account, Cloudflare Pages, Edit |
-| `APSCRAP_PAGES_PROJECT` | apscrap | Pages project name |
 | `TELEGRAM_BOT_TOKEN` `TELEGRAM_CHAT_ID` | | Turns on the alert |
 | `ALERT_MAX_PRICE` | 1300 | |
 | `ALERT_TYPOLOGIES` | T1,T2,T3,T4,T5,T6 | |
